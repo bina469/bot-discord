@@ -57,15 +57,15 @@ async function atualizarRelatorio() {
     texto += `\n----------------------\n`;
   }
 
-  if (mensagemRelatorioId) {
-    try {
+  try {
+    if (mensagemRelatorioId) {
       const msg = await canal.messages.fetch(mensagemRelatorioId);
       await msg.edit(texto);
-    } catch {
+    } else {
       const msg = await canal.send(texto);
       mensagemRelatorioId = msg.id;
     }
-  } else {
+  } catch {
     const msg = await canal.send(texto);
     mensagemRelatorioId = msg.id;
   }
@@ -124,10 +124,7 @@ async function atualizarPainel() {
     )
   );
 
-  const texto =
-`📞 **PAINEL DE PRESENÇA**\n
-${status}\n
-👇 Use os botões abaixo`;
+  const texto = `📞 **PAINEL DE PRESENÇA**\n\n${status}\n\n👇 Use os botões abaixo`;
 
   try {
     if (mensagemPainelId) {
@@ -143,40 +140,63 @@ ${status}\n
   }
 }
 
-/* ================= SERVIDOR HTTP PARA 24/7 ================= */
-const http = require('http');
-const PORT = process.env.PORT || 3000;
-
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('Bot running!');
-}).listen(PORT, () => {
-  console.log(`🌐 Servidor HTTP ativo na porta ${PORT}`);
-});
-
 /* ================= BOT ================= */
 client.once('ready', async () => {
-  console.log('🚀 Iniciando bot...');
+  console.log('🚀 Bot online e painel ativo');
 
-  mensagemPainelId = null;
-  mensagemRelatorioId = null;
-
-  await atualizarPainel();
-  await atualizarRelatorio();
-
-  // Atualiza o painel a cada 5 minutos
+  // Atualizar painel a cada 5 minutos
   setInterval(async () => {
     await atualizarPainel();
   }, 5 * 60 * 1000);
 
-  console.log('✅ Bot online e painel ativo');
+  // Atualizar relatório a cada 5 minutos também
+  setInterval(async () => {
+    await atualizarRelatorio();
+  }, 5 * 60 * 1000);
+
+  // Atualiza uma vez no start
+  await atualizarPainel();
+  await atualizarRelatorio();
 });
 
 /* ================= INTERAÇÕES ================= */
-// ... aqui entra todo o código de interactionCreate que você já tem (não muda nada)
-
 client.on('interactionCreate', async interaction => {
-  // mantém todo o código que você me enviou para interação
+  try {
+    const user = interaction.user;
+
+    /* ===== CONECTAR ===== */
+    if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
+      const telefone = interaction.customId.replace('entrar_', '');
+
+      if (estadoTelefones[telefone]) {
+        return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
+      }
+
+      estadoTelefones[telefone] = {
+        userId: user.id,
+        nome: user.username,
+        entrada: new Date()
+      };
+
+      if (!atendimentosAtivos.has(user.id)) atendimentosAtivos.set(user.id, []);
+      atendimentosAtivos.get(user.id).push(telefone);
+
+      await registrarEvento(telefone, `🟢 ${hora()} — ${user.username} conectou`);
+      await atualizarPainel();
+
+      await interaction.reply({ content: `📞 Conectado ao telefone **${telefone}**`, ephemeral: true });
+      setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
+    }
+
+    // ... aqui entram os outros blocos de interação (sair_todos, menu_sair, transferir, forcar_desconectar)
+    // você mantém os mesmos blocos, mas **sempre envolvendo await interaction.reply() ou update() em try/catch**
+
+  } catch (err) {
+    console.error('Erro na interação:', err);
+    if (!interaction.replied && !interaction.deferred) {
+      interaction.reply({ content: '❌ Ocorreu um erro na interação.', ephemeral: true }).catch(()=>{});
+    }
+  }
 });
 
 client.login(TOKEN);
