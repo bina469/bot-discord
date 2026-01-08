@@ -1,13 +1,13 @@
 {
   "name": "bot-discord",
   "version": "1.0.0",
-  "description": "",
+  "description": "Bot Discord com painel funcional e 24/7",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": ["discord","bot","painel"],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
