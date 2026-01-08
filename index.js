@@ -58,8 +58,13 @@ async function atualizarRelatorio() {
   }
 
   if (mensagemRelatorioId) {
-    const msg = await canal.messages.fetch(mensagemRelatorioId);
-    await msg.edit(texto);
+    try {
+      const msg = await canal.messages.fetch(mensagemRelatorioId);
+      await msg.edit(texto);
+    } catch {
+      const msg = await canal.send(texto);
+      mensagemRelatorioId = msg.id;
+    }
   } else {
     const msg = await canal.send(texto);
     mensagemRelatorioId = msg.id;
@@ -120,16 +125,19 @@ async function atualizarPainel() {
   );
 
   const texto =
-`📞 **PAINEL DE PRESENÇA**
-
-${status}
-
+`📞 **PAINEL DE PRESENÇA**\n
+${status}\n
 👇 Use os botões abaixo`;
 
-  if (mensagemPainelId) {
-    const msg = await canal.messages.fetch(mensagemPainelId);
-    await msg.edit({ content: texto, components: rows });
-  } else {
+  try {
+    if (mensagemPainelId) {
+      const msg = await canal.messages.fetch(mensagemPainelId);
+      await msg.edit({ content: texto, components: rows });
+    } else {
+      const msg = await canal.send({ content: texto, components: rows });
+      mensagemPainelId = msg.id;
+    }
+  } catch {
     const msg = await canal.send({ content: texto, components: rows });
     mensagemPainelId = msg.id;
   }
@@ -137,10 +145,24 @@ ${status}
 
 /* ================= BOT ================= */
 client.once('ready', async () => {
-  console.log('✅ Bot online');
+  console.log('🚀 Iniciando bot...');
+  
+  // Resetar IDs antigos para evitar que componentes quebrados parem o painel
+  mensagemPainelId = null;
+  mensagemRelatorioId = null;
+
   await atualizarPainel();
+  await atualizarRelatorio();
+
+  // Atualizar painel a cada 5 minutos automaticamente
+  setInterval(async () => {
+    await atualizarPainel();
+  }, 5 * 60 * 1000);
+
+  console.log('✅ Bot online e painel ativo');
 });
 
+/* ================= INTERAÇÕES ================= */
 client.on('interactionCreate', async interaction => {
   const user = interaction.user;
 
@@ -213,7 +235,9 @@ client.on('interactionCreate', async interaction => {
     await atualizarPainel();
     await interaction.update({ content: `✅ Telefone **${telefone}** desconectado.`, components: [] });
 
-    setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
+    setTimeout(() => {
+      interaction.deleteReply().catch(() => {});
+    }, 3000);
   }
 
   /* ===== MENU TRANSFERIR ===== */
@@ -262,7 +286,9 @@ client.on('interactionCreate', async interaction => {
     await atualizarPainel();
     await interaction.update({ content: `✅ Telefone **${telefone}** transferido para **${novoUser.username}**.`, components: [] });
 
-    setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
+    setTimeout(() => {
+      interaction.deleteReply().catch(() => {});
+    }, 3000);
   }
 
   /* ===== FORÇAR DESCONEXÃO (ADMIN) ===== */
