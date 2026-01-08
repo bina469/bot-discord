@@ -5,17 +5,21 @@ const {
   ButtonBuilder,
   ButtonStyle,
   StringSelectMenuBuilder,
-  UserSelectMenuBuilder,
-  InteractionResponseFlags
+  UserSelectMenuBuilder
 } = require('discord.js');
-const express = require('express');
-require('dotenv').config();
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const express = require('express'); // Para manter o serviço online no Render
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds]
+});
 
 /* ================= CONFIG ================= */
 const canalPainelId = '1414723351125033190';
 const canalRelatorioId = '1458539184452276336';
+require('dotenv').config();
 const TOKEN = process.env.TOKEN;
 
 /* ================= TELEFONES ================= */
@@ -32,8 +36,12 @@ let mensagemPainelId = null;
 let mensagemRelatorioId = null;
 
 /* ================= UTIL ================= */
-function hoje() { return new Date().toLocaleDateString('pt-BR'); }
-function hora() { return new Date().toLocaleTimeString('pt-BR'); }
+function hoje() {
+  return new Date().toLocaleDateString('pt-BR');
+}
+function hora() {
+  return new Date().toLocaleTimeString('pt-BR');
+}
 function tempo(entrada) {
   const min = Math.floor((Date.now() - entrada) / 60000);
   return `${Math.floor(min / 60)}h ${min % 60}min`;
@@ -54,18 +62,18 @@ async function atualizarRelatorio() {
     }
 
     if (mensagemRelatorioId) {
-      try {
-        const msg = await canal.messages.fetch(mensagemRelatorioId);
+      const msg = await canal.messages.fetch(mensagemRelatorioId).catch(() => null);
+      if (msg) {
         await msg.edit(texto);
-      } catch {
-        const msg = await canal.send(texto);
-        mensagemRelatorioId = msg.id;
+      } else {
+        const nova = await canal.send(texto);
+        mensagemRelatorioId = nova.id;
       }
     } else {
-      const msg = await canal.send(texto);
-      mensagemRelatorioId = msg.id;
+      const nova = await canal.send(texto);
+      mensagemRelatorioId = nova.id;
     }
-  } catch (err) {
+  } catch(err) {
     console.error('Erro ao atualizar relatório:', err);
   }
 }
@@ -82,7 +90,6 @@ async function registrarEvento(telefone, texto) {
 async function atualizarPainel() {
   try {
     const canal = await client.channels.fetch(canalPainelId);
-
     const status = telefones.map(t =>
       estadoTelefones[t]
         ? `🔴 Telefone ${t} — ${estadoTelefones[t].nome}`
@@ -101,7 +108,6 @@ async function atualizarPainel() {
       rows.push(new ActionRowBuilder().addComponents(botoesTelefone.slice(i, i + 5)));
     }
 
-    // Botões principais
     rows.push(
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('sair_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
@@ -114,18 +120,18 @@ async function atualizarPainel() {
     const texto = `📞 **PAINEL DE PRESENÇA**\n\n${status}\n\n👇 Use os botões abaixo`;
 
     if (mensagemPainelId) {
-      try {
-        const msg = await canal.messages.fetch(mensagemPainelId);
+      const msg = await canal.messages.fetch(mensagemPainelId).catch(() => null);
+      if (msg) {
         await msg.edit({ content: texto, components: rows });
-      } catch {
-        const msg = await canal.send({ content: texto, components: rows });
-        mensagemPainelId = msg.id;
+      } else {
+        const nova = await canal.send({ content: texto, components: rows });
+        mensagemPainelId = nova.id;
       }
     } else {
-      const msg = await canal.send({ content: texto, components: rows });
-      mensagemPainelId = msg.id;
+      const nova = await canal.send({ content: texto, components: rows });
+      mensagemPainelId = nova.id;
     }
-  } catch (err) {
+  } catch(err) {
     console.error('Erro ao atualizar painel:', err);
   }
 }
@@ -133,13 +139,17 @@ async function atualizarPainel() {
 /* ================= BOT ================= */
 client.once('ready', async () => {
   console.log('🚀 Iniciando bot...');
+
   mensagemPainelId = null;
   mensagemRelatorioId = null;
 
   await atualizarPainel();
   await atualizarRelatorio();
 
-  setInterval(atualizarPainel, 5 * 60 * 1000);
+  setInterval(async () => {
+    await atualizarPainel();
+  }, 5 * 60 * 1000);
+
   console.log('✅ Bot online e painel ativo');
 });
 
@@ -152,18 +162,14 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const telefone = interaction.customId.replace('entrar_', '');
       if (estadoTelefones[telefone]) {
-        return interaction.reply({ content: '⚠️ Telefone ocupado.', flags: InteractionResponseFlags.Ephemeral });
+        return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
       }
-
       estadoTelefones[telefone] = { userId: user.id, nome: user.username, entrada: new Date() };
       if (!atendimentosAtivos.has(user.id)) atendimentosAtivos.set(user.id, []);
       atendimentosAtivos.get(user.id).push(telefone);
-
       await registrarEvento(telefone, `🟢 ${hora()} — ${user.username} conectou`);
       await atualizarPainel();
-
-      await interaction.reply({ content: `📞 Conectado ao telefone **${telefone}**`, flags: InteractionResponseFlags.Ephemeral });
-      setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
+      return interaction.reply({ content: `📞 Conectado ao telefone **${telefone}**`, ephemeral: true });
     }
 
     /* ===== SAIR TODOS ===== */
@@ -176,21 +182,18 @@ client.on('interactionCreate', async interaction => {
       }
       atendimentosAtivos.delete(user.id);
       await atualizarPainel();
-      await interaction.reply({ content: '📴 Desconectado de todos os telefones', flags: InteractionResponseFlags.Ephemeral });
-      setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
+      return interaction.reply({ content: '📴 Desconectado de todos os telefones', ephemeral: true });
     }
 
     /* ===== MENU SAIR UM ===== */
     if (interaction.isButton() && interaction.customId === 'menu_sair') {
       const lista = atendimentosAtivos.get(user.id) || [];
-      if (lista.length === 0) return interaction.reply({ content: '⚠️ Você não está conectado em nenhum telefone.', flags: InteractionResponseFlags.Ephemeral });
-
+      if (lista.length === 0) return interaction.reply({ content: '⚠️ Você não está conectado em nenhum telefone.', ephemeral: true });
       const menu = new StringSelectMenuBuilder()
         .setCustomId('sair_um')
         .setPlaceholder('Escolha o telefone')
         .addOptions(lista.map(t => ({ label: t, value: t })));
-
-      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], flags: InteractionResponseFlags.Ephemeral });
+      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'sair_um') {
@@ -200,28 +203,23 @@ client.on('interactionCreate', async interaction => {
       delete estadoTelefones[telefone];
       atendimentosAtivos.set(user.id, atendimentosAtivos.get(user.id).filter(t => t !== telefone));
       await atualizarPainel();
-      await interaction.update({ content: `✅ Telefone **${telefone}** desconectado.`, components: [] });
+      return interaction.update({ content: `✅ Telefone **${telefone}** desconectado.`, components: [] });
     }
 
     /* ===== MENU TRANSFERIR ===== */
     if (interaction.isButton() && interaction.customId === 'menu_transferir') {
       const lista = atendimentosAtivos.get(user.id) || [];
-      if (lista.length === 0) return interaction.reply({ content: '⚠️ Você não está conectado em nenhum telefone.', flags: InteractionResponseFlags.Ephemeral });
-
+      if (lista.length === 0) return interaction.reply({ content: '⚠️ Você não está conectado em nenhum telefone.', ephemeral: true });
       const menu = new StringSelectMenuBuilder()
         .setCustomId('transferir_tel')
         .setPlaceholder('Escolha o telefone')
         .addOptions(lista.map(t => ({ label: t, value: t })));
-
-      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], flags: InteractionResponseFlags.Ephemeral });
+      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel') {
       const telefone = interaction.values[0];
-      const menuUser = new UserSelectMenuBuilder()
-        .setCustomId(`transferir_user_${telefone}`)
-        .setPlaceholder('Escolha o novo telefonista');
-
+      const menuUser = new UserSelectMenuBuilder().setCustomId(`transferir_user_${telefone}`).setPlaceholder('Escolha o novo telefonista');
       return interaction.update({ components: [new ActionRowBuilder().addComponents(menuUser)] });
     }
 
@@ -230,72 +228,49 @@ client.on('interactionCreate', async interaction => {
       const novoId = interaction.values[0];
       const novoUser = await client.users.fetch(novoId);
       const antigo = estadoTelefones[telefone];
-
-      await registrarEvento(
-        telefone,
-        `🔁 ${hora()} — ${antigo.nome} transferiu para ${novoUser.username} (${tempo(antigo.entrada)})`
-      );
-
+      await registrarEvento(telefone, `🔁 ${hora()} — ${antigo.nome} transferiu para ${novoUser.username} (${tempo(antigo.entrada)})`);
       estadoTelefones[telefone] = { userId: novoId, nome: novoUser.username, entrada: new Date() };
       atendimentosAtivos.set(antigo.userId, atendimentosAtivos.get(antigo.userId).filter(t => t !== telefone));
       if (!atendimentosAtivos.has(novoId)) atendimentosAtivos.set(novoId, []);
       atendimentosAtivos.get(novoId).push(telefone);
-
       await atualizarPainel();
-      await interaction.update({ content: `✅ Telefone **${telefone}** transferido para **${novoUser.username}**.`, components: [] });
+      return interaction.update({ content: `✅ Telefone **${telefone}** transferido para **${novoUser.username}**.`, components: [] });
     }
 
-    /* ===== FORÇAR DESCONEXÃO ===== */
+    /* ===== FORÇAR DESCONEXÃO (ADMIN) ===== */
     if (interaction.isButton() && interaction.customId === 'forcar_desconectar') {
       const ocupados = Object.keys(estadoTelefones);
-      if (ocupados.length === 0) return interaction.reply({ content: '⚠️ Nenhum telefone ocupado.', flags: InteractionResponseFlags.Ephemeral });
-
+      if (ocupados.length === 0) return interaction.reply({ content: '⚠️ Nenhum telefone ocupado.', ephemeral: true });
       const menu = new StringSelectMenuBuilder()
         .setCustomId('forcar_tel')
         .setPlaceholder('Escolha o telefone')
         .addOptions(ocupados.map(t => ({ label: `Telefone ${t}`, description: `Em uso por ${estadoTelefones[t].nome}`, value: t })));
-
-      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], flags: InteractionResponseFlags.Ephemeral });
+      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'forcar_tel') {
       const telefone = interaction.values[0];
       const dados = estadoTelefones[telefone];
-
-      await registrarEvento(
-        telefone,
-        `🛑 ${hora()} — ${dados.nome} foi desconectado manualmente por ${interaction.user.username} (${tempo(dados.entrada)})`
-      );
-
+      await registrarEvento(telefone, `🛑 ${hora()} — ${dados.nome} foi desconectado manualmente por ${interaction.user.username} (${tempo(dados.entrada)})`);
       delete estadoTelefones[telefone];
       if (atendimentosAtivos.has(dados.userId)) {
         atendimentosAtivos.set(dados.userId, atendimentosAtivos.get(dados.userId).filter(t => t !== telefone));
       }
-
       await atualizarPainel();
-      await interaction.update({ content: `✅ Telefone **${telefone}** desconectado à força.`, components: [] });
+      return interaction.update({ content: `✅ Telefone **${telefone}** desconectado à força.`, components: [] });
     }
 
-  } catch (err) {
+  } catch(err) {
     console.error('💥 Erro na interação:', err);
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({ content: '⚠️ Ocorreu um erro.', flags: InteractionResponseFlags.Ephemeral }).catch(() => {});
-    } else {
-      await interaction.reply({ content: '⚠️ Ocorreu um erro.', flags: InteractionResponseFlags.Ephemeral }).catch(() => {});
-    }
   }
 });
 
-/* ================= TRATAMENTO GLOBAL DE ERROS ================= */
-client.on('error', (err) => console.error('💥 Erro no Client:', err));
-process.on('unhandledRejection', (reason) => console.error('💥 Rejeição não tratada:', reason));
-process.on('uncaughtException', (err) => console.error('💥 Exceção não tratada:', err));
+/* ================= ERROS GLOBAIS ================= */
+client.on('error', console.error);
+client.on('warn', console.warn);
 
-/* ================= INICIAR BOT ================= */
+/* ================= EXPRESS KEEP ALIVE ================= */
+app.get('/', (req, res) => res.send('Bot Online'));
+app.listen(PORT, () => console.log(`🌐 Servidor Web rodando na porta ${PORT}`));
+
 client.login(TOKEN);
-
-/* ================= SERVIÇO EXPRESS PARA RENDER ================= */
-const app = express();
-app.get('/', (req, res) => res.send('Bot online ✅'));
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Express rodando na porta ${PORT}`));
