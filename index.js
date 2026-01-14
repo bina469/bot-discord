@@ -12,8 +12,8 @@ const express = require('express');
 require('dotenv').config();
 
 /* ================= CONFIG ================= */
-const CANAL_PAINEL_ID = '1414723351125033190';
-const CANAL_RELATORIO_ID = '1458539184452276336';
+const CANAL_PAINEL_ID = 'COLE_ID_CANAL_PAINEL';
+const CANAL_RELATORIO_ID = 'COLE_ID_CANAL_RELATORIO';
 const TOKEN = process.env.TOKEN;
 
 /* ================= BOT ================= */
@@ -23,8 +23,12 @@ const client = new Client({
 
 /* ================= TELEFONES ================= */
 const telefones = [
-  'Pathy','Samantha','Rosalia','Rafaela',
-  'Sophia','Ingrid','Valentina','Melissa'
+  'Pathy',
+  'Samantha',
+  'Rosalia',
+  'Ingrid',
+  'Melissa',
+  'Alina'
 ];
 
 /* ================= ESTADO ================= */
@@ -125,7 +129,6 @@ client.on('interactionCreate', async interaction => {
   try {
     const user = interaction.user;
 
-    /* ===== ENTRAR ===== */
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const tel = interaction.customId.replace('entrar_', '');
 
@@ -144,7 +147,6 @@ client.on('interactionCreate', async interaction => {
       setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
     }
 
-    /* ===== SAIR TODOS ===== */
     if (interaction.isButton() && interaction.customId === 'sair_todos') {
       const lista = atendimentosAtivos.get(user.id) || [];
 
@@ -161,7 +163,6 @@ client.on('interactionCreate', async interaction => {
       setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
     }
 
-    /* ===== SAIR UM ===== */
     if (interaction.isButton() && interaction.customId === 'menu_sair') {
       const lista = atendimentosAtivos.get(user.id) || [];
       if (!lista.length)
@@ -189,7 +190,6 @@ client.on('interactionCreate', async interaction => {
       setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
     }
 
-    /* ===== TRANSFERIR ===== */
     if (interaction.isButton() && interaction.customId === 'menu_transferir') {
       const lista = atendimentosAtivos.get(user.id) || [];
       if (!lista.length)
@@ -252,7 +252,7 @@ client.on('interactionCreate', async interaction => {
 /* ================= LOGIN ================= */
 client.login(TOKEN);
 
-/* ================= EXPRESS (RENDER) ================= */
+/* ================= EXPRESS ================= */
 const app = express();
 app.get('/', (_, res) => res.send('Online'));
 app.listen(process.env.PORT || 3000);
