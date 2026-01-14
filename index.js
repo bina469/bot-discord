@@ -12,8 +12,8 @@ const express = require('express');
 require('dotenv').config();
 
 /* ================= CONFIG ================= */
-const CANAL_PAINEL_ID = 'COLE_ID_CANAL_PAINEL';
-const CANAL_RELATORIO_ID = 'COLE_ID_CANAL_RELATORIO';
+const CANAL_PAINEL_ID = '1414723351125033190';
+const CANAL_RELATORIO_ID = '1458539184452276336';
 const TOKEN = process.env.TOKEN;
 
 /* ================= BOT ================= */
