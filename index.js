@@ -89,85 +89,91 @@ client.on('interactionCreate', async interaction => {
   const user = interaction.user;
 
   /* ===== TRANSFERIR ===== */
-  if (interaction.isButton() && interaction.customId === 'transferir') {
-    const meusTelefones = atendimentosAtivos.get(user.id) || [];
-    if (!meusTelefones.length) {
-      await interaction.reply({ content: '⚠️ Você não está em nenhum telefone.', ephemeral: true });
-      return setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
-    }
-
-    const menuTelefone = new StringSelectMenuBuilder()
-      .setCustomId('transferir_tel')
-      .setPlaceholder('Escolha o telefone')
-      .addOptions(meusTelefones.map(t => ({ label: t, value: t })));
-
-    await interaction.reply({
-      content: '🔵 Qual telefone deseja transferir?',
-      components: [new ActionRowBuilder().addComponents(menuTelefone)],
-      ephemeral: true
-    });
+if (interaction.isButton() && interaction.customId === 'transferir') {
+  const meusTelefones = atendimentosAtivos.get(user.id) || [];
+  if (!meusTelefones.length) {
+    await interaction.reply({ content: '⚠️ Você não está em nenhum telefone.', ephemeral: true });
+    return setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
   }
 
-  if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel') {
-    const telefone = interaction.values[0];
-    const guild = interaction.guild;
+  const menuTelefone = new StringSelectMenuBuilder()
+    .setCustomId('transferir_tel')
+    .setPlaceholder('Escolha o telefone')
+    .addOptions(meusTelefones.map(t => ({ label: t, value: t })));
 
-    const membros = await guild.members.fetch();
-    const elegiveis = membros.filter(m =>
-      m.roles.cache.some(r => r.name === CARGO_TRANSFERENCIA) &&
-      !m.user.bot
+  await interaction.reply({
+    content: '🔵 Qual telefone deseja transferir?',
+    components: [new ActionRowBuilder().addComponents(menuTelefone)],
+    ephemeral: true
+  });
+}
+
+if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel') {
+  const telefone = interaction.values[0];
+  const guild = interaction.guild;
+
+  const membros = await guild.members.fetch();
+  const elegiveis = membros.filter(m =>
+    m.roles.cache.some(r => r.name === '.') &&
+    !m.user.bot
+  );
+
+  if (!elegiveis.size) {
+    await interaction.reply({ content: '⚠️ Nenhum usuário elegível.', ephemeral: true });
+    return setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
+  }
+
+  const menuUsuarios = new StringSelectMenuBuilder()
+    .setCustomId(`transferir_user_${telefone}`)
+    .setPlaceholder('Escolha o telefonista')
+    .addOptions(
+      elegiveis.map(m => ({
+        label: m.user.username,
+        value: m.id
+      })).slice(0, 25)
     );
 
-    const menuUsuarios = new UserSelectMenuBuilder()
-      .setCustomId(`transferir_user_${telefone}`)
-      .setPlaceholder('Selecione o telefonista')
-      .setMinValues(1)
-      .setMaxValues(1);
+  await interaction.reply({
+    content: `👤 Para quem deseja transferir **${telefone}**?`,
+    components: [new ActionRowBuilder().addComponents(menuUsuarios)],
+    ephemeral: true
+  });
 
-    await interaction.reply({
-      content: `👤 Para quem deseja transferir o telefone **${telefone}**?`,
-      components: [new ActionRowBuilder().addComponents(menuUsuarios)],
-      ephemeral: true
-    });
+  setTimeout(() => interaction.deleteReply().catch(()=>{}), 15000);
+}
 
-    setTimeout(() => interaction.deleteReply().catch(()=>{}), 15000);
-  }
+if (interaction.isStringSelectMenu() && interaction.customId.startsWith('transferir_user_')) {
+  const telefone = interaction.customId.replace('transferir_user_', '');
+  const novoUserId = interaction.values[0];
 
-  if (interaction.isUserSelectMenu() && interaction.customId.startsWith('transferir_user_')) {
-    const telefone = interaction.customId.replace('transferir_user_', '');
-    const novoUserId = interaction.values[0];
+  const antigo = estadoTelefones[telefone];
+  if (!antigo) return;
 
-    const antigo = estadoTelefones[telefone];
-    if (!antigo) return;
+  // remove do antigo
+  atendimentosAtivos.get(antigo.userId)?.splice(
+    atendimentosAtivos.get(antigo.userId).indexOf(telefone), 1
+  );
 
-    // remove do antigo
-    atendimentosAtivos.get(antigo.userId)?.splice(
-      atendimentosAtivos.get(antigo.userId).indexOf(telefone), 1
-    );
+  // adiciona ao novo
+  const membro = await interaction.guild.members.fetch(novoUserId);
+  estadoTelefones[telefone] = {
+    userId: novoUserId,
+    nome: membro.user.username,
+    entrada: Date.now()
+  };
 
-    // adiciona ao novo
-    const membro = await interaction.guild.members.fetch(novoUserId);
-    estadoTelefones[telefone] = {
-      userId: novoUserId,
-      nome: membro.user.username,
-      entrada: Date.now()
-    };
+  if (!atendimentosAtivos.has(novoUserId)) atendimentosAtivos.set(novoUserId, []);
+  atendimentosAtivos.get(novoUserId).push(telefone);
 
-    if (!atendimentosAtivos.has(novoUserId)) atendimentosAtivos.set(novoUserId, []);
-    atendimentosAtivos.get(novoUserId).push(telefone);
+  await atualizarPainel();
 
-    await atualizarPainel();
+  await interaction.reply({
+    content: `🔄 Telefone **${telefone}** transferido para **${membro.user.username}**`,
+    ephemeral: true
+  });
 
-    await interaction.reply({
-      content: `🔄 Telefone **${telefone}** transferido para **${membro.user.username}**`,
-      ephemeral: true
-    });
-
-    setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
-  }
-});
-
-client.login(TOKEN);
+  setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
+}
 
 /* ================= EXPRESS ================= */
 const app = express();
