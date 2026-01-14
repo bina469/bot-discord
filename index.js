@@ -22,8 +22,8 @@ const client = new Client({
 });
 
 /* ================= TELEFONES ================= */
+// Remove Pathy da lista
 const telefones = [
-  'Pathy',
   'Samantha',
   'Rosalia',
   'Ingrid',
@@ -99,11 +99,13 @@ async function atualizarPainel() {
     rows.push(new ActionRowBuilder().addComponents(botoes.slice(i, i + 5)));
   }
 
+  // Adiciona botão de forçar desconexão
   rows.push(
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('sair_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId('menu_sair').setLabel('🟠 Desconectar UM').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('menu_transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId('menu_transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('forcar_desconectar').setLabel('⚠️ Forçar Desconexão').setStyle(ButtonStyle.Danger)
     )
   );
 
@@ -257,6 +259,39 @@ client.on('interactionCreate', async interaction => {
         components: []
       });
 
+      setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
+    }
+
+    // ===== FORÇAR DESCONECTAR =====
+    if (interaction.isButton() && interaction.customId === 'forcar_desconectar') {
+      await interaction.deferReply({ ephemeral: true });
+
+      const conectados = Object.keys(estadoTelefones);
+      if (!conectados.length)
+        return interaction.editReply({ content: '⚠️ Nenhum telefone conectado.', components: [] });
+
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId('forcar_desconectar_menu')
+        .setPlaceholder('Escolha o telefone para forçar desconexão')
+        .addOptions(conectados.map(t => ({ label: `${t} — ${estadoTelefones[t].nome}`, value: t })));
+
+      return interaction.editReply({ components: [new ActionRowBuilder().addComponents(menu)] });
+    }
+
+    // ===== EXECUTAR FORÇAR DESCONECTAR =====
+    if (interaction.isStringSelectMenu() && interaction.customId === 'forcar_desconectar_menu') {
+      await interaction.deferUpdate();
+      const tel = interaction.values[0];
+      const d = estadoTelefones[tel];
+
+      await registrarEvento(tel, `⚠️ ${hora()} — ${d.nome} foi desconectado forçadamente.`);
+      delete estadoTelefones[tel];
+
+      // Remove do mapa de atendimentos ativos
+      atendimentosAtivos.set(d.userId, atendimentosAtivos.get(d.userId).filter(t => t !== tel));
+      await atualizarPainel();
+
+      await interaction.editReply({ content: `✅ ${tel} desconectado forçadamente.`, components: [] });
       setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
     }
 
