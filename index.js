@@ -129,6 +129,7 @@ client.on('interactionCreate', async interaction => {
   try {
     const user = interaction.user;
 
+    // ===== ENTRAR TELEFONE =====
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const tel = interaction.customId.replace('entrar_', '');
 
@@ -147,36 +148,42 @@ client.on('interactionCreate', async interaction => {
       setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
     }
 
+    // ===== DESCONECTAR TODOS =====
     if (interaction.isButton() && interaction.customId === 'sair_todos') {
-      const lista = atendimentosAtivos.get(user.id) || [];
+      await interaction.deferReply({ ephemeral: true });
 
+      const lista = atendimentosAtivos.get(user.id) || [];
       for (const tel of lista) {
         const d = estadoTelefones[tel];
         await registrarEvento(tel, `🔴 ${hora()} — ${d.nome} saiu (${tempo(d.entrada)})`);
         delete estadoTelefones[tel];
       }
-
       atendimentosAtivos.delete(user.id);
       await atualizarPainel();
 
-      await interaction.reply({ content: '📴 Desconectado de todos.', ephemeral: true });
+      await interaction.editReply({ content: '📴 Desconectado de todos.' });
       setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
     }
 
+    // ===== MENU DESCONECTAR UM =====
     if (interaction.isButton() && interaction.customId === 'menu_sair') {
       const lista = atendimentosAtivos.get(user.id) || [];
       if (!lista.length)
         return interaction.reply({ content: '⚠️ Nenhum telefone ativo.', ephemeral: true });
+
+      await interaction.deferReply({ ephemeral: true });
 
       const menu = new StringSelectMenuBuilder()
         .setCustomId('sair_um')
         .setPlaceholder('Escolha o telefone')
         .addOptions(lista.map(t => ({ label: t, value: t })));
 
-      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+      return interaction.editReply({ components: [new ActionRowBuilder().addComponents(menu)] });
     }
 
+    // ===== DESCONECTAR UM =====
     if (interaction.isStringSelectMenu() && interaction.customId === 'sair_um') {
+      await interaction.deferUpdate();
       const tel = interaction.values[0];
       const d = estadoTelefones[tel];
 
@@ -186,34 +193,43 @@ client.on('interactionCreate', async interaction => {
       atendimentosAtivos.set(user.id, atendimentosAtivos.get(user.id).filter(t => t !== tel));
       await atualizarPainel();
 
-      await interaction.update({ content: `✅ ${tel} desconectado.`, components: [] });
+      await interaction.editReply({ content: `✅ ${tel} desconectado.`, components: [] });
       setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
     }
 
+    // ===== MENU TRANSFERIR =====
     if (interaction.isButton() && interaction.customId === 'menu_transferir') {
       const lista = atendimentosAtivos.get(user.id) || [];
       if (!lista.length)
         return interaction.reply({ content: '⚠️ Nenhum telefone ativo.', ephemeral: true });
+
+      await interaction.deferReply({ ephemeral: true });
 
       const menu = new StringSelectMenuBuilder()
         .setCustomId('transferir_tel')
         .setPlaceholder('Escolha o telefone')
         .addOptions(lista.map(t => ({ label: t, value: t })));
 
-      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+      return interaction.editReply({ components: [new ActionRowBuilder().addComponents(menu)] });
     }
 
+    // ===== ESCOLHER TELEFONE PARA TRANSFERIR =====
     if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel') {
+      await interaction.deferUpdate();
       const tel = interaction.values[0];
 
       const menuUser = new UserSelectMenuBuilder()
         .setCustomId(`transferir_user_${tel}`)
-        .setPlaceholder('Escolha o novo telefonista');
+        .setPlaceholder('Escolha o novo telefonista')
+        .setMaxValues(1)
+        .setMinValues(1);
 
-      return interaction.update({ components: [new ActionRowBuilder().addComponents(menuUser)] });
+      return interaction.editReply({ components: [new ActionRowBuilder().addComponents(menuUser)] });
     }
 
+    // ===== TRANSFERIR TELEFONE =====
     if (interaction.isUserSelectMenu() && interaction.customId.startsWith('transferir_user_')) {
+      await interaction.deferUpdate();
       const tel = interaction.customId.replace('transferir_user_', '');
       const novoId = interaction.values[0];
       const novoUser = await client.users.fetch(novoId);
@@ -236,7 +252,7 @@ client.on('interactionCreate', async interaction => {
 
       await atualizarPainel();
 
-      await interaction.update({
+      await interaction.editReply({
         content: `✅ ${tel} transferido para **${novoUser.username}**.`,
         components: []
       });
