@@ -1,10 +1,94 @@
+require('dotenv').config();
+const {
+  Client,
+  GatewayIntentBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
+} = require('discord.js');
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages
+  ]
+});
+
+/* ================== CONFIG ================== */
+const CHANNEL_ID = process.env.CHANNEL_ID;
+const TELEFONES = ['João', 'Alina'];
+
+/* ================== ESTADO ================== */
+let painelMessage = null;
+const estadoTelefones = {};
+const atendimentosAtivos = new Map();
+
+/* ================== PAINEL ================== */
+async function atualizarPainel() {
+  const channel = await client.channels.fetch(CHANNEL_ID);
+  if (!channel) return;
+
+  const linhas = TELEFONES.map(t => {
+    const ativo = estadoTelefones[t];
+    return ativo
+      ? `🟢 **${t}** — ${ativo.nome}`
+      : `🔴 **${t}** — Livre`;
+  });
+
+  const row1 = new ActionRowBuilder().addComponents(
+    TELEFONES.map(t =>
+      new ButtonBuilder()
+        .setCustomId(`entrar_${t}`)
+        .setLabel(`Entrar ${t}`)
+        .setStyle(ButtonStyle.Success)
+    )
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('sair_um')
+      .setLabel('Desconectar um')
+      .setStyle(ButtonStyle.Secondary),
+
+    new ButtonBuilder()
+      .setCustomId('sair_todos')
+      .setLabel('Desconectar todos')
+      .setStyle(ButtonStyle.Danger),
+
+    new ButtonBuilder()
+      .setCustomId('forcar_desconectar')
+      .setLabel('Forçar desconexão')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  if (!painelMessage) {
+    painelMessage = await channel.send({
+      content: `📞 **Painel de Telefones**\n\n${linhas.join('\n')}`,
+      components: [row1, row2]
+    });
+  } else {
+    await painelMessage.edit({
+      content: `📞 **Painel de Telefones**\n\n${linhas.join('\n')}`,
+      components: [row1, row2]
+    });
+  }
+}
+
+/* ================== READY ================== */
+client.once('ready', async () => {
+  console.log(`✅ Logado como ${client.user.tag}`);
+  await atualizarPainel();
+});
+
+/* ================== INTERAÇÕES ================== */
 client.on('interactionCreate', async interaction => {
+  if (!interaction.isButton()) return;
   const user = interaction.user;
 
   try {
 
     /* ===== ENTRAR ===== */
-    if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
+    if (interaction.customId.startsWith('entrar_')) {
       const telefone = interaction.customId.replace('entrar_', '');
 
       if (estadoTelefones[telefone]) {
@@ -15,8 +99,7 @@ client.on('interactionCreate', async interaction => {
 
       estadoTelefones[telefone] = {
         userId: user.id,
-        nome: user.username,
-        entrada: new Date()
+        nome: user.username
       };
 
       if (!atendimentosAtivos.has(user.id)) atendimentosAtivos.set(user.id, []);
@@ -30,9 +113,9 @@ client.on('interactionCreate', async interaction => {
     }
 
     /* ===== SAIR TODOS ===== */
-    else if (interaction.isButton() && interaction.customId === 'sair_todos') {
+    if (interaction.customId === 'sair_todos') {
       const lista = atendimentosAtivos.get(user.id) || [];
-      for (const tel of lista) delete estadoTelefones[tel];
+      lista.forEach(t => delete estadoTelefones[t]);
       atendimentosAtivos.delete(user.id);
 
       await atualizarPainel();
@@ -43,7 +126,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     /* ===== SAIR UM ===== */
-    else if (interaction.isButton() && interaction.customId === 'sair_um') {
+    if (interaction.customId === 'sair_um') {
       const lista = atendimentosAtivos.get(user.id) || [];
 
       if (!lista.length) {
@@ -52,123 +135,33 @@ client.on('interactionCreate', async interaction => {
         return;
       }
 
-      const menu = new StringSelectMenuBuilder()
-        .setCustomId('sair_um_menu')
-        .setPlaceholder('Escolha o telefone')
-        .addOptions(lista.map(t => ({ label: t, value: t })));
-
-      await interaction.reply({
-        ephemeral: true,
-        components: [new ActionRowBuilder().addComponents(menu)]
-      });
-      return;
-    }
-
-    else if (interaction.isStringSelectMenu() && interaction.customId === 'sair_um_menu') {
-      const tel = interaction.values[0];
-
+      const tel = lista.pop();
       delete estadoTelefones[tel];
-      atendimentosAtivos.set(
-        user.id,
-        (atendimentosAtivos.get(user.id) || []).filter(t => t !== tel)
-      );
+      atendimentosAtivos.set(user.id, lista);
 
       await atualizarPainel();
-      await interaction.update({ components: [] });
-      setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
-      return;
-    }
 
-    /* ===== TRANSFERIR ===== */
-    else if (interaction.isButton() && interaction.customId === 'transferir') {
-      const ocupados = Object.keys(estadoTelefones);
-
-      if (!ocupados.length) {
-        await interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
-        setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
-        return;
-      }
-
-      const menu = new StringSelectMenuBuilder()
-        .setCustomId('transferir_tel')
-        .setPlaceholder('Escolha o telefone')
-        .addOptions(ocupados.map(t => ({ label: t, value: t })));
-
-      await interaction.reply({
-        ephemeral: true,
-        components: [new ActionRowBuilder().addComponents(menu)]
-      });
-      return;
-    }
-
-    else if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel') {
-      transferenciasPendentes.set(user.id, interaction.values[0]);
-
-      const membros = interaction.guild.members.cache
-        .filter(m => m.roles.cache.some(r => r.name === CARGO_TELEFONISTA))
-        .map(m => ({ label: m.user.username, value: m.id }));
-
-      const menu = new StringSelectMenuBuilder()
-        .setCustomId('transferir_user')
-        .setPlaceholder('Escolha o telefonista')
-        .addOptions(membros);
-
-      await interaction.update({
-        components: [new ActionRowBuilder().addComponents(menu)]
-      });
-      return;
-    }
-
-    else if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_user') {
-      const tel = transferenciasPendentes.get(user.id);
-      const novoUser = await client.users.fetch(interaction.values[0]);
-
-      estadoTelefones[tel] = {
-        userId: novoUser.id,
-        nome: novoUser.username,
-        entrada: new Date()
-      };
-
-      transferenciasPendentes.delete(user.id);
-
-      await atualizarPainel();
-      await interaction.update({ components: [] });
+      await interaction.reply({ content: `📴 Desconectado do telefone ${tel}`, ephemeral: true });
       setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
       return;
     }
 
     /* ===== FORÇAR ===== */
-    else if (interaction.isButton() && interaction.customId === 'forcar') {
-      const ocupados = Object.keys(estadoTelefones);
-
-      if (!ocupados.length) {
-        await interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
-        setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
-        return;
-      }
-
-      const menu = new StringSelectMenuBuilder()
-        .setCustomId('forcar_menu')
-        .setPlaceholder('Forçar desconexão')
-        .addOptions(ocupados.map(t => ({ label: t, value: t })));
-
-      await interaction.reply({
-        ephemeral: true,
-        components: [new ActionRowBuilder().addComponents(menu)]
-      });
-      return;
-    }
-
-    else if (interaction.isStringSelectMenu() && interaction.customId === 'forcar_menu') {
-      delete estadoTelefones[interaction.values[0]];
+    if (interaction.customId === 'forcar_desconectar') {
+      Object.keys(estadoTelefones).forEach(t => delete estadoTelefones[t]);
+      atendimentosAtivos.clear();
 
       await atualizarPainel();
-      await interaction.update({ components: [] });
+
+      await interaction.reply({ content: '🛑 Desconexão forçada executada', ephemeral: true });
       setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
       return;
     }
 
   } catch (e) {
-    console.error('Erro:', e);
+    console.error('Erro na interação:', e);
   }
 });
+
+/* ================== LOGIN ================== */
+client.login(process.env.TOKEN);
