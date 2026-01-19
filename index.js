@@ -28,7 +28,7 @@ const telefones = [
   'Rosalia',
   'Ingrid',
   'Melissa',
-  'Alina'
+  'Cloe'
 ];
 
 /* ================= ESTADO ================= */
