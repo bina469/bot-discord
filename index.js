@@ -1,3 +1,14 @@
+4:30am 
+
+RESETAR O GIFFGAFF
+
+TROCAR O NUMERO NOVO NOS ANUNCIO DA CLOE 
+
+CRIAR OS WHATSAPP E OS GRUPOS DE ATENDIMENTO
+
+ 
+
+
 const {
   Client,
   GatewayIntentBits,
@@ -22,7 +33,7 @@ const client = new Client({
 });
 
 /* ================= TELEFONES ================= */
-// Removido Alina, adicionado Cloe
+// Remove Pathy da lista
 const telefones = [
   'Samantha',
   'Rosalia',
@@ -99,6 +110,7 @@ async function atualizarPainel() {
     rows.push(new ActionRowBuilder().addComponents(botoes.slice(i, i + 5)));
   }
 
+  // Adiciona botão de forçar desconexão
   rows.push(
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('sair_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
@@ -126,13 +138,11 @@ client.once('ready', async () => {
 });
 
 /* ================= INTERAÇÕES ================= */
-// ⚠️ TODO O RESTO DO CÓDIGO PERMANECE EXATAMENTE IGUAL
-// (sem nenhuma alteração além da lista de telefones)
-
 client.on('interactionCreate', async interaction => {
   try {
     const user = interaction.user;
 
+    // ===== ENTRAR TELEFONE =====
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const tel = interaction.customId.replace('entrar_', '');
 
@@ -151,7 +161,151 @@ client.on('interactionCreate', async interaction => {
       setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
     }
 
-    // (restante do código permanece exatamente igual ao que você enviou)
+    // ===== DESCONECTAR TODOS =====
+    if (interaction.isButton() && interaction.customId === 'sair_todos') {
+      await interaction.deferReply({ ephemeral: true });
+
+      const lista = atendimentosAtivos.get(user.id) || [];
+      for (const tel of lista) {
+        const d = estadoTelefones[tel];
+        await registrarEvento(tel, `🔴 ${hora()} — ${d.nome} saiu (${tempo(d.entrada)})`);
+        delete estadoTelefones[tel];
+      }
+      atendimentosAtivos.delete(user.id);
+      await atualizarPainel();
+
+      await interaction.editReply({ content: '📴 Desconectado de todos.' });
+      setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
+    }
+
+    // ===== MENU DESCONECTAR UM =====
+    if (interaction.isButton() && interaction.customId === 'menu_sair') {
+      const lista = atendimentosAtivos.get(user.id) || [];
+      if (!lista.length)
+        return interaction.reply({ content: '⚠️ Nenhum telefone ativo.', ephemeral: true });
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId('sair_um')
+        .setPlaceholder('Escolha o telefone')
+        .addOptions(lista.map(t => ({ label: t, value: t })));
+
+      return interaction.editReply({ components: [new ActionRowBuilder().addComponents(menu)] });
+    }
+
+    // ===== DESCONECTAR UM =====
+    if (interaction.isStringSelectMenu() && interaction.customId === 'sair_um') {
+      await interaction.deferUpdate();
+      const tel = interaction.values[0];
+      const d = estadoTelefones[tel];
+
+      await registrarEvento(tel, `🔴 ${hora()} — ${d.nome} saiu (${tempo(d.entrada)})`);
+      delete estadoTelefones[tel];
+
+      atendimentosAtivos.set(user.id, atendimentosAtivos.get(user.id).filter(t => t !== tel));
+      await atualizarPainel();
+
+      await interaction.editReply({ content: `✅ ${tel} desconectado.`, components: [] });
+      setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
+    }
+
+    // ===== MENU TRANSFERIR =====
+    if (interaction.isButton() && interaction.customId === 'menu_transferir') {
+      const lista = atendimentosAtivos.get(user.id) || [];
+      if (!lista.length)
+        return interaction.reply({ content: '⚠️ Nenhum telefone ativo.', ephemeral: true });
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId('transferir_tel')
+        .setPlaceholder('Escolha o telefone')
+        .addOptions(lista.map(t => ({ label: t, value: t })));
+
+      return interaction.editReply({ components: [new ActionRowBuilder().addComponents(menu)] });
+    }
+
+    // ===== ESCOLHER TELEFONE PARA TRANSFERIR =====
+    if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel') {
+      await interaction.deferUpdate();
+      const tel = interaction.values[0];
+
+      const menuUser = new UserSelectMenuBuilder()
+        .setCustomId(`transferir_user_${tel}`)
+        .setPlaceholder('Escolha o novo telefonista')
+        .setMaxValues(1)
+        .setMinValues(1);
+
+      return interaction.editReply({ components: [new ActionRowBuilder().addComponents(menuUser)] });
+    }
+
+    // ===== TRANSFERIR TELEFONE =====
+    if (interaction.isUserSelectMenu() && interaction.customId.startsWith('transferir_user_')) {
+      await interaction.deferUpdate();
+      const tel = interaction.customId.replace('transferir_user_', '');
+      const novoId = interaction.values[0];
+      const novoUser = await client.users.fetch(novoId);
+      const antigo = estadoTelefones[tel];
+
+      await registrarEvento(
+        tel,
+        `🔁 ${hora()} — ${antigo.nome} transferiu para ${novoUser.username} (${tempo(antigo.entrada)})`
+      );
+
+      estadoTelefones[tel] = { userId: novoId, nome: novoUser.username, entrada: new Date() };
+
+      atendimentosAtivos.set(
+        antigo.userId,
+        atendimentosAtivos.get(antigo.userId).filter(t => t !== tel)
+      );
+
+      if (!atendimentosAtivos.has(novoId)) atendimentosAtivos.set(novoId, []);
+      atendimentosAtivos.get(novoId).push(tel);
+
+      await atualizarPainel();
+
+      await interaction.editReply({
+        content: `✅ ${tel} transferido para **${novoUser.username}**.`,
+        components: []
+      });
+
+      setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
+    }
+
+    // ===== FORÇAR DESCONECTAR =====
+    if (interaction.isButton() && interaction.customId === 'forcar_desconectar') {
+      await interaction.deferReply({ ephemeral: true });
+
+      const conectados = Object.keys(estadoTelefones);
+      if (!conectados.length)
+        return interaction.editReply({ content: '⚠️ Nenhum telefone conectado.', components: [] });
+
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId('forcar_desconectar_menu')
+        .setPlaceholder('Escolha o telefone para forçar desconexão')
+        .addOptions(conectados.map(t => ({ label: `${t} — ${estadoTelefones[t].nome}`, value: t })));
+
+      return interaction.editReply({ components: [new ActionRowBuilder().addComponents(menu)] });
+    }
+
+    // ===== EXECUTAR FORÇAR DESCONECTAR =====
+    if (interaction.isStringSelectMenu() && interaction.customId === 'forcar_desconectar_menu') {
+      await interaction.deferUpdate();
+      const tel = interaction.values[0];
+      const d = estadoTelefones[tel];
+
+      await registrarEvento(tel, `⚠️ ${hora()} — ${d.nome} foi desconectado forçadamente.`);
+      delete estadoTelefones[tel];
+
+      // Remove do mapa de atendimentos ativos
+      atendimentosAtivos.set(d.userId, atendimentosAtivos.get(d.userId).filter(t => t !== tel));
+      await atualizarPainel();
+
+      await interaction.editReply({ content: `✅ ${tel} desconectado forçadamente.`, components: [] });
+      setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
+    }
+
   } catch (err) {
     console.error('ERRO:', err);
   }
