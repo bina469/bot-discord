@@ -4,12 +4,10 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder,
   PermissionsBitField,
   ChannelType,
   InteractionResponseFlags
 } = require('discord.js');
-
 const express = require('express');
 require('dotenv').config();
 
@@ -42,7 +40,7 @@ const presenca = new Map(); // telefoneId -> userId
 const tickets = new Map();
 
 /* ================= READY ================= */
-client.once('clientReady', async () => {
+client.once('ready', async () => {
   console.log(`✅ Logado como ${client.user.tag}`);
 
   /* ===== PAINEL PRESENÇA ===== */
@@ -86,44 +84,48 @@ client.once('clientReady', async () => {
 /* ================= INTERAÇÕES ================= */
 client.on('interactionCreate', async interaction => {
   try {
-    /* ===== BOTÕES ===== */
-    if (interaction.isButton()) {
-      await interaction.deferReply({ flags: InteractionResponseFlags.Ephemeral });
+    if (!interaction.isButton()) return;
+    await interaction.deferReply({ flags: InteractionResponseFlags.Ephemeral });
 
-      /* ===== ABRIR TICKET ===== */
-      if (interaction.customId === 'abrir_ticket') {
-        if (!interaction.member.roles.cache.has(CARGO_TELEFONISTA_ID)) {
-          return interaction.editReply('❌ Sem permissão.');
-        }
+    /* ===== PRESENÇA ===== */
+    if (['conectar', 'desconectar', 'desconectar_um', 'transferir', 'forcar_desconexao'].includes(interaction.customId)) {
+      // Aqui você implementa a lógica de presença
+      return interaction.editReply(`✅ Ação de presença: ${interaction.customId} processada.`);
+    }
 
-        const canal = await interaction.guild.channels.create({
-          name: `ticket-${interaction.user.username}`,
-          type: ChannelType.GuildText,
-          permissionOverwrites: [
-            { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-            { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
-            { id: CARGO_STAFF_ID, allow: [PermissionsBitField.Flags.ViewChannel] }
-          ]
-        });
-
-        tickets.set(canal.id, interaction.user.id);
-
-        await canal.send({
-          content: `🎫 Ticket de <@${interaction.user.id}>`,
-          components: [
-            new ActionRowBuilder().addComponents(
-              new ButtonBuilder().setCustomId('fechar_ticket').setLabel('🔴 Fechar').setStyle(ButtonStyle.Danger),
-              new ButtonBuilder().setCustomId('reabrir_ticket').setLabel('🟢 Reabrir').setStyle(ButtonStyle.Success),
-              new ButtonBuilder().setCustomId('excluir_ticket').setLabel('🗑️ Excluir').setStyle(ButtonStyle.Secondary)
-            )
-          ]
-        });
-
-        return interaction.editReply(`✅ Ticket criado: ${canal}`);
+    /* ===== TICKET ===== */
+    if (interaction.customId === 'abrir_ticket') {
+      if (!interaction.member.roles.cache.has(CARGO_TELEFONISTA_ID)) {
+        return interaction.editReply('❌ Sem permissão.');
       }
 
-      return interaction.editReply('✅ Ação processada.');
+      const canal = await interaction.guild.channels.create({
+        name: `ticket-${interaction.user.username}`,
+        type: ChannelType.GuildText,
+        permissionOverwrites: [
+          { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+          { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
+          { id: CARGO_STAFF_ID, allow: [PermissionsBitField.Flags.ViewChannel] }
+        ]
+      });
+
+      tickets.set(canal.id, interaction.user.id);
+
+      await canal.send({
+        content: `🎫 Ticket de <@${interaction.user.id}>`,
+        components: [
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('fechar_ticket').setLabel('🔴 Fechar').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId('reabrir_ticket').setLabel('🟢 Reabrir').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('excluir_ticket').setLabel('🗑️ Excluir').setStyle(ButtonStyle.Secondary)
+          )
+        ]
+      });
+
+      return interaction.editReply(`✅ Ticket criado: ${canal}`);
     }
+
+    return interaction.editReply('✅ Ação processada.');
   } catch (err) {
     console.error('ERRO:', err);
   }
