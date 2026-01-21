@@ -1,25 +1,27 @@
-const { 
-  Client, 
-  GatewayIntentBits, 
-  ActionRowBuilder, 
-  ButtonBuilder, 
-  ButtonStyle, 
-  StringSelectMenuBuilder, 
-  UserSelectMenuBuilder 
+const {
+  Client,
+  GatewayIntentBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  StringSelectMenuBuilder,
+  UserSelectMenuBuilder
 } = require('discord.js');
 
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds]
+});
+
+/* ================= CONFIG ================= */
 const TOKEN = process.env.TOKEN;
 const PORT = process.env.PORT;
 
 const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_RELATORIO_PRESENCA_ID = '1458342162981716039';
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-
 /* ================= TELEFONES ================= */
 const telefones = [
-  'Samantha','Rosalia',
-  'Ingrid','Valentina','Melissa'
+  'Samantha', 'Ingrid', 'Valentina', 'Melissa'
 ];
 
 /* ================= ESTADO ================= */
@@ -30,9 +32,13 @@ let mensagemPainelId = null;
 let mensagemRelatorioId = null;
 
 /* ================= UTIL ================= */
-function hoje() { return new Date().toLocaleDateString('pt-BR'); }
-function hora() { return new Date().toLocaleTimeString('pt-BR'); }
-function tempo(entrada) { 
+function hoje() {
+  return new Date().toLocaleDateString('pt-BR');
+}
+function hora() {
+  return new Date().toLocaleTimeString('pt-BR');
+}
+function tempo(entrada) {
   const min = Math.floor((Date.now() - entrada) / 60000);
   return `${Math.floor(min / 60)}h ${min % 60}min`;
 }
@@ -44,15 +50,24 @@ async function atualizarRelatorio() {
   if (!relatorioDiario[data]) return;
 
   let texto = `📅 **RELATÓRIO DIÁRIO — ${data}**\n\n`;
+
   for (const tel of Object.keys(relatorioDiario[data])) {
+    // ignora telefones removidos
+    if (!telefones.includes(tel)) continue;
+
     texto += `📞 **Telefone ${tel}**\n`;
     texto += relatorioDiario[data][tel].join('\n');
     texto += `\n----------------------\n`;
   }
 
   if (mensagemRelatorioId) {
-    const msg = await canal.messages.fetch(mensagemRelatorioId);
-    await msg.edit(texto);
+    try {
+      const msg = await canal.messages.fetch(mensagemRelatorioId);
+      await msg.edit(texto);
+    } catch {
+      const msg = await canal.send(texto);
+      mensagemRelatorioId = msg.id;
+    }
   } else {
     const msg = await canal.send(texto);
     mensagemRelatorioId = msg.id;
@@ -86,7 +101,9 @@ async function atualizarPainel() {
 
   const rows = [];
   for (let i = 0; i < botoesTelefone.length; i += 5) {
-    rows.push(new ActionRowBuilder().addComponents(botoesTelefone.slice(i, i + 5)));
+    rows.push(
+      new ActionRowBuilder().addComponents(botoesTelefone.slice(i, i + 5))
+    );
   }
 
   rows.push(
@@ -104,14 +121,18 @@ async function atualizarPainel() {
         .setLabel('🔵 Transferir')
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
-        .setCustomId('forcar_desconexao')
+        .setCustomId('menu_forcar')
         .setLabel('⚠️ Forçar Desconexão')
         .setStyle(ButtonStyle.Danger)
     )
   );
 
   const texto =
-`📞 **PAINEL DE PRESENÇA**\n\n${status}\n\n👇 Use os botões abaixo`;
+`📞 **PAINEL DE PRESENÇA**
+
+${status}
+
+👇 Use os botões abaixo`;
 
   if (mensagemPainelId) {
     const msg = await canal.messages.fetch(mensagemPainelId);
@@ -137,13 +158,19 @@ client.on('interactionCreate', async interaction => {
     if (estadoTelefones[telefone]) {
       return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
     }
-    estadoTelefones[telefone] = { userId: user.id, nome: user.username, entrada: new Date() };
+    estadoTelefones[telefone] = {
+      userId: user.id,
+      nome: user.username,
+      entrada: new Date()
+    };
     if (!atendimentosAtivos.has(user.id)) atendimentosAtivos.set(user.id, []);
     atendimentosAtivos.get(user.id).push(telefone);
+
     await registrarEvento(telefone, `🟢 ${hora()} — ${user.username} conectou`);
     await atualizarPainel();
+
     await interaction.reply({ content: `📞 Conectado ao telefone **${telefone}**`, ephemeral: true });
-    setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
+    setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
   }
 
   /* ===== SAIR TODOS ===== */
@@ -156,20 +183,19 @@ client.on('interactionCreate', async interaction => {
     }
     atendimentosAtivos.delete(user.id);
     await atualizarPainel();
+
     await interaction.reply({ content: '📴 Desconectado de todos os telefones', ephemeral: true });
-    setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
+    setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
   }
 
   /* ===== MENU SAIR UM ===== */
   if (interaction.isButton() && interaction.customId === 'menu_sair') {
     const lista = atendimentosAtivos.get(user.id) || [];
     if (lista.length === 0) return interaction.reply({ content: '⚠️ Você não está conectado em nenhum telefone.', ephemeral: true });
-
     const menu = new StringSelectMenuBuilder()
       .setCustomId('sair_um')
       .setPlaceholder('Escolha o telefone')
       .addOptions(lista.map(t => ({ label: t, value: t })));
-
     return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
   }
 
@@ -180,6 +206,7 @@ client.on('interactionCreate', async interaction => {
     delete estadoTelefones[telefone];
     atendimentosAtivos.set(user.id, atendimentosAtivos.get(user.id).filter(t => t !== telefone));
     await atualizarPainel();
+
     await interaction.update({ content: `✅ Telefone **${telefone}** desconectado.`, components: [] });
     setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
   }
@@ -188,12 +215,10 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isButton() && interaction.customId === 'menu_transferir') {
     const lista = atendimentosAtivos.get(user.id) || [];
     if (lista.length === 0) return interaction.reply({ content: '⚠️ Você não está conectado em nenhum telefone.', ephemeral: true });
-
     const menu = new StringSelectMenuBuilder()
       .setCustomId('transferir_tel')
       .setPlaceholder('Escolha o telefone')
       .addOptions(lista.map(t => ({ label: t, value: t })));
-
     return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
   }
 
@@ -202,7 +227,6 @@ client.on('interactionCreate', async interaction => {
     const menuUser = new UserSelectMenuBuilder()
       .setCustomId(`transferir_user_${telefone}`)
       .setPlaceholder('Escolha o novo telefonista');
-
     return interaction.update({ components: [new ActionRowBuilder().addComponents(menuUser)] });
   }
 
@@ -212,7 +236,11 @@ client.on('interactionCreate', async interaction => {
     const novoUser = await client.users.fetch(novoId);
     const antigo = estadoTelefones[telefone];
 
-    await registrarEvento(telefone, `🔁 ${hora()} — ${antigo.nome} transferiu para ${novoUser.username} (${tempo(antigo.entrada)})`);
+    await registrarEvento(
+      telefone,
+      `🔁 ${hora()} — ${antigo.nome} transferiu para ${novoUser.username} (${tempo(antigo.entrada)})`
+    );
+
     estadoTelefones[telefone] = { userId: novoId, nome: novoUser.username, entrada: new Date() };
     atendimentosAtivos.set(antigo.userId, atendimentosAtivos.get(antigo.userId).filter(t => t !== telefone));
     if (!atendimentosAtivos.has(novoId)) atendimentosAtivos.set(novoId, []);
@@ -223,28 +251,26 @@ client.on('interactionCreate', async interaction => {
     setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
   }
 
-  /* ===== FORÇAR DESCONEXÃO ===== */
-  if (interaction.isButton() && interaction.customId === 'forcar_desconexao') {
+  /* ===== MENU FORÇAR DESCONEXÃO ===== */
+  if (interaction.isButton() && interaction.customId === 'menu_forcar') {
+    const lista = telefones.filter(t => estadoTelefones[t]);
+    if (lista.length === 0) return interaction.reply({ content: '⚠️ Nenhum telefone está ocupado.', ephemeral: true });
     const menu = new StringSelectMenuBuilder()
-      .setCustomId('forcar_desconectar_tel')
+      .setCustomId('forcar_tel')
       .setPlaceholder('Escolha o telefone para forçar desconexão')
-      .addOptions(telefones.map(t => ({ label: t, value: t })));
-
+      .addOptions(lista.map(t => ({ label: t, value: t })));
     return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
   }
 
-  if (interaction.isStringSelectMenu() && interaction.customId === 'forcar_desconectar_tel') {
+  if (interaction.isStringSelectMenu() && interaction.customId === 'forcar_tel') {
     const telefone = interaction.values[0];
     const dados = estadoTelefones[telefone];
-    if (!dados) return interaction.update({ content: '⚠️ Telefone já livre.', components: [] });
-
-    await registrarEvento(telefone, `⚠️ ${hora()} — ${dados.nome} foi desconectado FORÇADO`);
+    await registrarEvento(telefone, `⚠️ ${hora()} — ${dados.nome} foi desconectado FORÇADO (${tempo(dados.entrada)})`);
     delete estadoTelefones[telefone];
-    for (const [userId, lista] of atendimentosAtivos.entries()) {
-      atendimentosAtivos.set(userId, lista.filter(t => t !== telefone));
-    }
-
+    const donoId = dados.userId;
+    atendimentosAtivos.set(donoId, atendimentosAtivos.get(donoId).filter(t => t !== telefone));
     await atualizarPainel();
+
     await interaction.update({ content: `⚠️ Telefone **${telefone}** desconectado FORÇADO.`, components: [] });
     setTimeout(() => interaction.deleteReply().catch(() => {}), 3000);
   }
