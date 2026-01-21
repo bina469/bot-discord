@@ -253,6 +253,133 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
+/* ================= TICKET SYSTEM ================= */
+
+const ticketsAbertos = new Map();
+
+/* ===== BOTÃO ABRIR TICKET ===== */
+if (interaction.isButton() && interaction.customId === 'abrir_ticket') {
+  await interaction.deferReply({ flags: 64 });
+
+  const member = interaction.member;
+
+  if (!member.roles.cache.has(CARGO_TELEFONISTA_ID)) {
+    return interaction.editReply({ content: '❌ Apenas telefonistas podem abrir ticket.' });
+  }
+
+  if (ticketsAbertos.has(member.id)) {
+    return interaction.editReply({ content: '⚠️ Você já possui um ticket aberto.' });
+  }
+
+  const canal = await interaction.guild.channels.create({
+    name: `ticket-${member.user.username}-online`,
+    type: ChannelType.GuildText,
+    parent: CANAL_ABRIR_TICKET_ID,
+    permissionOverwrites: [
+      {
+        id: interaction.guild.id,
+        deny: [PermissionsBitField.Flags.ViewChannel]
+      },
+      {
+        id: member.id,
+        allow: [
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.SendMessages
+        ]
+      },
+      {
+        id: CARGO_STAFF_ID,
+        allow: [
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.SendMessages
+        ]
+      }
+    ]
+  });
+
+  ticketsAbertos.set(member.id, canal.id);
+
+  await canal.send({
+    content: `🎫 **Ticket de ${member.user.username} — ONLINE**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('ticket_excluir')
+          .setLabel('❌ Excluir')
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId('ticket_salvar')
+          .setLabel('💾 Salvar')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId('ticket_reabrir')
+          .setLabel('🔓 Reabrir')
+          .setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  });
+
+  return interaction.editReply({ content: `✅ Ticket criado: ${canal}` });
+}
+
+/* ===== EXCLUIR TICKET ===== */
+if (interaction.isButton() && interaction.customId === 'ticket_excluir') {
+  const canal = interaction.channel;
+  const dono = [...ticketsAbertos.entries()].find(([_, c]) => c === canal.id);
+
+  if (!dono || interaction.user.id !== dono[0]) {
+    return interaction.reply({ content: '❌ Apenas o dono pode excluir.', flags: 64 });
+  }
+
+  ticketsAbertos.delete(dono[0]);
+  await canal.delete();
+}
+
+/* ===== SALVAR TICKET (STAFF) ===== */
+if (interaction.isButton() && interaction.customId === 'ticket_salvar') {
+  if (!interaction.member.roles.cache.has(CARGO_STAFF_ID)) {
+    return interaction.reply({ content: '❌ Apenas staff.', flags: 64 });
+  }
+
+  await interaction.deferReply({ flags: 64 });
+
+  const canal = interaction.channel;
+  const dono = [...ticketsAbertos.entries()].find(([_, c]) => c === canal.id);
+  if (!dono) return interaction.editReply({ content: 'Erro ao localizar ticket.' });
+
+  const member = await interaction.guild.members.fetch(dono[0]);
+
+  await canal.setParent(CANAL_TRANSCRIPT_ID);
+  await canal.setName(`ticket-${member.user.username}-offline`);
+
+  await canal.permissionOverwrites.edit(member.id, {
+    SendMessages: false
+  });
+
+  ticketsAbertos.delete(dono[0]);
+
+  await member.send(
+    `📄 Seu ticket foi salvo.\nCanal: **${canal.name}**`
+  ).catch(() => {});
+
+  return interaction.editReply({ content: '💾 Ticket salvo e arquivado.' });
+}
+
+/* ===== REABRIR TICKET (STAFF) ===== */
+if (interaction.isButton() && interaction.customId === 'ticket_reabrir') {
+  if (!interaction.member.roles.cache.has(CARGO_STAFF_ID)) {
+    return interaction.reply({ content: '❌ Apenas staff.', flags: 64 });
+  }
+
+  const canal = interaction.channel;
+  const nome = canal.name.replace('-offline', '-online');
+
+  await canal.setName(nome);
+
+  return interaction.reply({ content: '🔓 Ticket reaberto.', flags: 64 });
+}
+
+
 /* ================= LOGIN ================= */
 client.login(TOKEN);
 
