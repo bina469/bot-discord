@@ -53,59 +53,76 @@ async function registrarEvento(telefone, texto) {
   if (!relatorioDiario[data][telefone]) relatorioDiario[data][telefone] = [];
   relatorioDiario[data][telefone].push(texto);
 
-  const canal = await client.channels.fetch(CANAL_RELATORIO_PRESENCA_ID);
-  let textoRelatorio = `📅 **RELATÓRIO DIÁRIO — ${data}**\n\n`;
-  for (const tel of Object.keys(relatorioDiario[data])) {
-    textoRelatorio += `📞 **Telefone ${tel}**\n`;
-    textoRelatorio += relatorioDiario[data][tel].join('\n') + `\n----------------------\n`;
-  }
+  try {
+    const canal = await client.channels.fetch(CANAL_RELATORIO_PRESENCA_ID);
+    let textoRelatorio = `📅 **RELATÓRIO DIÁRIO — ${data}**\n\n`;
+    for (const tel of Object.keys(relatorioDiario[data])) {
+      textoRelatorio += `📞 **Telefone ${tel}**\n`;
+      textoRelatorio += relatorioDiario[data][tel].join('\n') + `\n----------------------\n`;
+    }
 
-  if (mensagemRelatorioId) {
-    const msg = await canal.messages.fetch(mensagemRelatorioId);
-    await msg.edit(textoRelatorio);
-  } else {
-    const msg = await canal.send(textoRelatorio);
-    mensagemRelatorioId = msg.id;
+    if (mensagemRelatorioId) {
+      try {
+        const msg = await canal.messages.fetch(mensagemRelatorioId);
+        await msg.edit(textoRelatorio);
+      } catch {
+        const msg = await canal.send(textoRelatorio);
+        mensagemRelatorioId = msg.id;
+      }
+    } else {
+      const msg = await canal.send(textoRelatorio);
+      mensagemRelatorioId = msg.id;
+    }
+  } catch (err) {
+    console.log('⚠️ Falha ao atualizar relatório:', err.message);
   }
 }
 
 /* ================= PAINEL ================= */
 async function atualizarPainel() {
-  const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID);
+  try {
+    const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID);
 
-  const status = telefones.map(t =>
-    presenca.has(t)
-      ? `🔴 Telefone ${t} — ${presenca.get(t).nome}`
-      : `🟢 Telefone ${t} — Livre`
-  ).join('\n');
+    const status = telefones.map(t =>
+      presenca.has(t)
+        ? `🔴 Telefone ${t} — ${presenca.get(t).nome}`
+        : `🟢 Telefone ${t} — Livre`
+    ).join('\n');
 
-  // Linha de botões de conexão
-  const botoesConectar = telefones.map(t =>
-    new ButtonBuilder()
-      .setCustomId(`conectar_${t}`)
-      .setLabel(`📞 ${t}`)
-      .setStyle(ButtonStyle.Success)
-      .setDisabled(presenca.has(t))
-  );
+    // Linha de botões de conexão
+    const botoesConectar = telefones.map(t =>
+      new ButtonBuilder()
+        .setCustomId(`conectar_${t}`)
+        .setLabel(`📞 ${t}`)
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(presenca.has(t))
+    );
+    const rowConectar = new ActionRowBuilder().addComponents(botoesConectar);
 
-  const rowConectar = new ActionRowBuilder().addComponents(botoesConectar);
+    // Linha de botões de ações
+    const rowAcoes = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('desconectar_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('desconectar_um').setLabel('🟠 Desconectar UM').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('forcar_desconexao').setLabel('⚠️ Forçar desconexão').setStyle(ButtonStyle.Danger)
+    );
 
-  // Linha de botões de ações
-  const rowAcoes = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('desconectar_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId('desconectar_um').setLabel('🟠 Desconectar UM').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('forcar_desconexao').setLabel('⚠️ Forçar desconexão').setStyle(ButtonStyle.Danger)
-  );
+    const texto = `📞 **PAINEL DE PRESENÇA**\n\n${status}\n\n👇 Use os botões abaixo`;
 
-  const texto = `📞 **PAINEL DE PRESENÇA**\n\n${status}\n\n👇 Use os botões abaixo`;
-
-  if (mensagemPainelId) {
-    const msg = await canal.messages.fetch(mensagemPainelId);
-    await msg.edit({ content: texto, components: [rowConectar, rowAcoes] });
-  } else {
-    const msg = await canal.send({ content: texto, components: [rowConectar, rowAcoes] });
-    mensagemPainelId = msg.id;
+    if (mensagemPainelId) {
+      try {
+        const msg = await canal.messages.fetch(mensagemPainelId);
+        await msg.edit({ content: texto, components: [rowConectar, rowAcoes] });
+      } catch {
+        const msg = await canal.send({ content: texto, components: [rowConectar, rowAcoes] });
+        mensagemPainelId = msg.id;
+      }
+    } else {
+      const msg = await canal.send({ content: texto, components: [rowConectar, rowAcoes] });
+      mensagemPainelId = msg.id;
+    }
+  } catch (err) {
+    console.log('⚠️ Falha ao atualizar painel:', err.message);
   }
 }
 
@@ -262,3 +279,9 @@ client.login(TOKEN);
 const app = express();
 app.get('/', (_, res) => res.send('Bot online'));
 app.listen(process.env.PORT || 3000);
+
+/* ================= COMANDOS GIT ================= */
+console.log('💾 Para subir no Git, use:');
+console.log('git add .');
+console.log('git commit -m "🎉 Painel de presença funcional pronto"');
+console.log('git push');
