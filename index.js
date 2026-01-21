@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, UserSelectMenuBuilder, InteractionType } = require('discord.js');
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, UserSelectMenuBuilder } = require('discord.js');
 const express = require('express');
 require('dotenv').config();
 
@@ -56,7 +56,12 @@ async function atualizarPainel() {
   const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID);
   const status = telefones.map(t => presenca[t] ? `🔴 ${t} — ${presenca[t].nome}` : `🟢 ${t} — Livre`).join('\n');
 
-  const botoesTelefone = telefones.map(t => new ButtonBuilder().setCustomId(`entrar_${t}`).setLabel(`📞 ${t}`).setStyle(ButtonStyle.Success));
+  const botoesTelefone = telefones.map(t => new ButtonBuilder()
+    .setCustomId(`entrar_${t}`)
+    .setLabel(`${t}`)
+    .setStyle(presenca[t] ? ButtonStyle.Danger : ButtonStyle.Success)
+  );
+
   const rows = [];
   for (let i = 0; i < botoesTelefone.length; i += 4) rows.push(new ActionRowBuilder().addComponents(botoesTelefone.slice(i, i + 4)));
 
@@ -79,10 +84,12 @@ async function atualizarPainel() {
 }
 
 async function enviarMsgTemporaria(interaction, texto) {
-  // Sempre defer se necessário
-  if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true }).catch(() => {});
-  const msg = await interaction.followUp({ content: texto, ephemeral: true });
-  setTimeout(() => msg.delete().catch(() => {}), 5000);
+  // Agora usamos somente ephemeral, sem followUp
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.reply({ content: texto, ephemeral: true }).catch(() => {});
+  } else {
+    await interaction.editReply({ content: texto, ephemeral: true }).catch(() => {});
+  }
 }
 
 client.once('ready', async () => {
@@ -158,7 +165,7 @@ client.on('interactionCreate', async interaction => {
       const menuUser = new UserSelectMenuBuilder()
         .setCustomId(`transferir_user_${telefone}`)
         .setPlaceholder('Escolha o novo telefonista');
-      return interaction.followUp({ components: [new ActionRowBuilder().addComponents(menuUser)], ephemeral: true });
+      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menuUser)], ephemeral: true });
     }
 
     if (interaction.isUserSelectMenu() && interaction.customId.startsWith('transferir_user_')) {
