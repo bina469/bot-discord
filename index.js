@@ -4,25 +4,19 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder,
-  PermissionsBitField,
-  ChannelType
+  StringSelectMenuBuilder
 } = require('discord.js');
 const express = require('express');
 require('dotenv').config();
 
-/* ================= CONFIG ================= */
 const TOKEN = process.env.TOKEN;
-const PORT = process.env.PORT; // render usa esta porta obrigatoriamente
+const PORT = process.env.PORT;
 
-// CANAIS
 const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_RELATORIO_PRESENCA_ID = '1458342162981716039';
 
-// TELEFONES
 const TELEFONES = ['Samantha', 'Katherine', 'Rosalia', 'Ingrid'];
 
-/* ================= BOT ================= */
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -31,11 +25,9 @@ const client = new Client({
   ]
 });
 
-/* ================= ESTADO ================= */
-const presenca = new Map(); // telefone -> userId
-let msgRelatorio = null; // mensagem do relatório
+const presenca = new Map();
+let msgRelatorio = null;
 
-/* ================= FUNÇÕES ================= */
 async function atualizarRelatorio() {
   const canal = await client.channels.fetch(CANAL_RELATORIO_PRESENCA_ID);
   let conteudo = '📊 **Relatório de Presença**\n';
@@ -54,20 +46,20 @@ async function atualizarRelatorio() {
 }
 
 async function enviarNotif(interaction, conteudo) {
+  if (!interaction.replied && !interaction.deferred) {
+    await interaction.deferReply({ ephemeral: true });
+  }
   const msg = await interaction.followUp({ content: conteudo, ephemeral: true });
   setTimeout(() => msg.delete().catch(() => {}), 5000);
 }
 
-/* ================= READY ================= */
 client.once('ready', async () => {
   console.log(`✅ Logado como ${client.user.tag}`);
-
   const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID);
   if (!canal) return;
 
   await canal.bulkDelete(5).catch(() => {});
 
-  // Monta painel
   await canal.send({
     content: '📞 **Painel de Presença**',
     components: [
@@ -88,14 +80,12 @@ client.once('ready', async () => {
   atualizarRelatorio();
 });
 
-/* ================= INTERAÇÕES ================= */
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
 
   try {
     const id = interaction.customId;
 
-    // ===== CONECTAR TELEFONE =====
     if (id.startsWith('conectar_')) {
       const telefone = id.split('_')[1];
       presenca.set(telefone, interaction.user.id);
@@ -104,7 +94,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // ===== DESCONECTAR TODOS =====
     if (id === 'desconectar_todos') {
       presenca.clear();
       await enviarNotif(interaction, '📴 Desconectado de todos os telefones');
@@ -112,67 +101,44 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // ===== DESCONECTAR UM =====
-    if (id === 'desconectar_um') {
+    if (id === 'desconectar_um' || id === 'transferir' || id === 'forcar_desconexao') {
       const opcoes = [];
       presenca.forEach((user, tel) => opcoes.push({ label: tel, value: tel }));
       if (opcoes.length === 0) return enviarNotif(interaction, '❌ Nenhum telefone conectado');
 
+      let menuCustomId = '';
+      let texto = '';
+      if (id === 'desconectar_um') { menuCustomId = 'menu_desconectar_um'; texto = 'Selecione o telefone para desconectar:'; }
+      if (id === 'transferir') { menuCustomId = 'menu_transferir_telefone'; texto = 'Selecione o telefone para transferir:'; }
+      if (id === 'forcar_desconexao') { menuCustomId = 'menu_forcar_desconexao'; texto = 'Selecione o telefone para forçar desconexão:'; }
+
       const menu = new StringSelectMenuBuilder()
-        .setCustomId('menu_desconectar_um')
+        .setCustomId(menuCustomId)
         .setPlaceholder('Escolha o telefone')
         .addOptions(opcoes);
 
-      await interaction.reply({ content: 'Selecione o telefone para desconectar:', components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: texto, components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+      } else {
+        await interaction.editReply({ content: texto, components: [new ActionRowBuilder().addComponents(menu)] });
+      }
       return;
     }
 
-    if (id === 'transferir') {
-      const opcoes = [];
-      presenca.forEach((user, tel) => opcoes.push({ label: tel, value: tel }));
-      if (opcoes.length === 0) return enviarNotif(interaction, '❌ Nenhum telefone conectado');
-
-      const menu = new StringSelectMenuBuilder()
-        .setCustomId('menu_transferir_telefone')
-        .setPlaceholder('Escolha o telefone para transferir')
-        .addOptions(opcoes);
-
-      await interaction.reply({ content: 'Selecione o telefone para transferir:', components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
-      return;
-    }
-
-    if (id === 'forcar_desconexao') {
-      const opcoes = [];
-      presenca.forEach((user, tel) => opcoes.push({ label: tel, value: tel }));
-      if (opcoes.length === 0) return enviarNotif(interaction, '❌ Nenhum telefone conectado');
-
-      const menu = new StringSelectMenuBuilder()
-        .setCustomId('menu_forcar_desconexao')
-        .setPlaceholder('Escolha o telefone para forçar desconexão')
-        .addOptions(opcoes);
-
-      await interaction.reply({ content: 'Selecione o telefone para forçar desconexão:', components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
-      return;
-    }
-
-    // ===== MENUS =====
     if (interaction.isStringSelectMenu()) {
       const telSelecionado = interaction.values[0];
-
       if (interaction.customId === 'menu_desconectar_um') {
         presenca.delete(telSelecionado);
         await enviarNotif(interaction, `✅ Telefone **${telSelecionado}** desconectado`);
         atualizarRelatorio();
         return;
       }
-
       if (interaction.customId === 'menu_forcar_desconexao') {
         presenca.delete(telSelecionado);
         await enviarNotif(interaction, `⚠️ Telefone **${telSelecionado}** desconectado FORÇADO`);
         atualizarRelatorio();
         return;
       }
-
       if (interaction.customId === 'menu_transferir_telefone') {
         await enviarNotif(interaction, `🔁 Telefone **${telSelecionado}** pronto para transferir (implemente lógica de escolha do novo usuário)`);
         return;
@@ -181,15 +147,16 @@ client.on('interactionCreate', async interaction => {
 
   } catch (err) {
     console.error('ERRO PAINEL:', err);
-    interaction.followUp({ content: '⚠️ Ocorreu um erro ao processar a ação.', ephemeral: true }).catch(() => {});
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: '⚠️ Ocorreu um erro ao processar a ação.', ephemeral: true }).catch(() => {});
+    } else {
+      await interaction.followUp({ content: '⚠️ Ocorreu um erro ao processar a ação.', ephemeral: true }).catch(() => {});
+    }
   }
 });
 
-/* ================= LOGIN ================= */
 client.login(TOKEN);
 
-/* ================= KEEP ALIVE ================= */
 const app = express();
 app.get('/', (_, res) => res.send('Bot online'));
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
-
