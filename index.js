@@ -84,15 +84,15 @@ async function atualizarPainel() {
 }
 
 async function enviarMsgTemporaria(interaction, texto) {
-  // Agora usamos somente ephemeral, sem followUp
-  if (!interaction.deferred && !interaction.replied) {
+  // Apenas um reply por interação
+  if (!interaction.replied && !interaction.deferred) {
     await interaction.reply({ content: texto, ephemeral: true }).catch(() => {});
   } else {
     await interaction.editReply({ content: texto, ephemeral: true }).catch(() => {});
   }
 }
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`✅ Logado como ${client.user.tag}`);
   await atualizarPainel();
 });
@@ -134,11 +134,10 @@ client.on('interactionCreate', async interaction => {
         .setCustomId('sair_um_menu')
         .setPlaceholder('Escolha o telefone')
         .addOptions(lista.map(t => ({ label: t, value: t })));
-      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+      return interaction.update({ components: [new ActionRowBuilder().addComponents(menu)] });
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'sair_um_menu') {
-      await interaction.deferUpdate();
       const telefone = interaction.values[0];
       const dados = presenca[telefone];
       await registrarEvento(telefone, `🔴 ${hora()} — ${dados.nome} saiu (${tempo(dados.entrada)})`);
@@ -156,20 +155,18 @@ client.on('interactionCreate', async interaction => {
         .setCustomId('transferir_tel_menu')
         .setPlaceholder('Escolha o telefone')
         .addOptions(lista.map(t => ({ label: t, value: t })));
-      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+      return interaction.update({ components: [new ActionRowBuilder().addComponents(menu)] });
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel_menu') {
-      await interaction.deferUpdate();
       const telefone = interaction.values[0];
       const menuUser = new UserSelectMenuBuilder()
         .setCustomId(`transferir_user_${telefone}`)
         .setPlaceholder('Escolha o novo telefonista');
-      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menuUser)], ephemeral: true });
+      return interaction.update({ components: [new ActionRowBuilder().addComponents(menuUser)] });
     }
 
     if (interaction.isUserSelectMenu() && interaction.customId.startsWith('transferir_user_')) {
-      await interaction.deferUpdate();
       const telefone = interaction.customId.replace('transferir_user_', '');
       const novoId = interaction.values[0];
       const novoUser = await client.users.fetch(novoId);
@@ -193,11 +190,10 @@ client.on('interactionCreate', async interaction => {
         .setCustomId('forcar_desconexao_menu')
         .setPlaceholder('Escolha o telefone')
         .addOptions(conectados.map(t => ({ label: t, value: t })));
-      return interaction.reply({ components: [new ActionRowBuilder().addComponents(menu)], ephemeral: true });
+      return interaction.update({ components: [new ActionRowBuilder().addComponents(menu)] });
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'forcar_desconexao_menu') {
-      await interaction.deferUpdate();
       const telefone = interaction.values[0];
       const dados = presenca[telefone];
       await registrarEvento(telefone, `⚠️ ${hora()} — ${dados.nome} desconectado FORÇADO (${tempo(dados.entrada)})`);
