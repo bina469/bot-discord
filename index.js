@@ -17,7 +17,7 @@ const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_RELATORIO_PRESENCA_ID = '1458342162981716039';
 
 // Telefone atualizados
-const telefones = ['Samantha', 'Ingrid', 'Valentina', 'Melissa', 'Rosalia'];
+const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
 
 // Estado
 const estadoTelefones = {};
