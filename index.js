@@ -53,7 +53,6 @@ async function registrarEvento(telefone, texto) {
   if (!relatorioDiario[data][telefone]) relatorioDiario[data][telefone] = [];
   relatorioDiario[data][telefone].push(texto);
 
-  // Atualiza mensagem no canal de relatório
   const canal = await client.channels.fetch(CANAL_RELATORIO_PRESENCA_ID);
   let textoRelatorio = `📅 **RELATÓRIO DIÁRIO — ${data}**\n\n`;
   for (const tel of Object.keys(relatorioDiario[data])) {
@@ -80,22 +79,32 @@ async function atualizarPainel() {
       : `🟢 Telefone ${t} — Livre`
   ).join('\n');
 
-  const rows = [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('desconectar_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('desconectar_um').setLabel('🟠 Desconectar UM').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('forcar_desconexao').setLabel('⚠️ Forçar desconexão').setStyle(ButtonStyle.Danger)
-    )
-  ];
+  // Linha de botões de conexão
+  const botoesConectar = telefones.map(t =>
+    new ButtonBuilder()
+      .setCustomId(`conectar_${t}`)
+      .setLabel(`📞 ${t}`)
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(presenca.has(t))
+  );
+
+  const rowConectar = new ActionRowBuilder().addComponents(botoesConectar);
+
+  // Linha de botões de ações
+  const rowAcoes = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('desconectar_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('desconectar_um').setLabel('🟠 Desconectar UM').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('forcar_desconexao').setLabel('⚠️ Forçar desconexão').setStyle(ButtonStyle.Danger)
+  );
 
   const texto = `📞 **PAINEL DE PRESENÇA**\n\n${status}\n\n👇 Use os botões abaixo`;
 
   if (mensagemPainelId) {
     const msg = await canal.messages.fetch(mensagemPainelId);
-    await msg.edit({ content: texto, components: rows });
+    await msg.edit({ content: texto, components: [rowConectar, rowAcoes] });
   } else {
-    const msg = await canal.send({ content: texto, components: rows });
+    const msg = await canal.send({ content: texto, components: [rowConectar, rowAcoes] });
     mensagemPainelId = msg.id;
   }
 }
@@ -112,6 +121,21 @@ client.on('interactionCreate', async interaction => {
 
     if (interaction.isButton()) {
       await interaction.deferReply({ flags: InteractionResponseFlags.Ephemeral });
+
+      /* ===== CONECTAR TELEFONE ===== */
+      if (interaction.customId.startsWith('conectar_')) {
+        const tel = interaction.customId.replace('conectar_', '');
+        if (presenca.has(tel)) return interaction.editReply(`⚠️ Telefone ${tel} já está ocupado.`);
+
+        presenca.set(tel, { userId: user.id, nome: user.username, entrada: Date.now() });
+        if (!atendimentosAtivos.has(user.id)) atendimentosAtivos.set(user.id, []);
+        atendimentosAtivos.get(user.id).push(tel);
+
+        await registrarEvento(tel, `🟢 ${hora()} — ${user.username} conectou`);
+        await atualizarPainel();
+
+        return interaction.editReply(`📞 Conectado ao telefone ${tel}`);
+      }
 
       /* ===== DESCONECTAR TODOS ===== */
       if (interaction.customId === 'desconectar_todos') {
@@ -213,7 +237,6 @@ client.on('interactionCreate', async interaction => {
 
       presenca.set(tel, { userId: novoId, nome: novoUser.username, entrada: Date.now() });
 
-      // Atualizar atendimentosAtivos
       atendimentosAtivos.set(antigo.userId, atendimentosAtivos.get(antigo.userId).filter(t => t !== tel));
       if (!atendimentosAtivos.has(novoId)) atendimentosAtivos.set(novoId, []);
       atendimentosAtivos.get(novoId).push(tel);
@@ -221,6 +244,7 @@ client.on('interactionCreate', async interaction => {
       await atualizarPainel();
       return interaction.update({ content: `✅ Telefone ${tel} transferido para ${novoUser.username}.`, components: [] });
     }
+
   } catch (err) {
     console.error('ERRO PAINEL:', err);
     if (interaction.deferred || interaction.replied) {
