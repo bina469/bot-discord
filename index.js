@@ -25,7 +25,8 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages
   ]
 });
 
@@ -46,11 +47,6 @@ client.once('ready', async () => {
       .setLabel('🎫 Abrir Ticket')
       .setStyle(ButtonStyle.Primary)
   );
-
-  if (painelMsgId) {
-    const msg = await canalPainel.messages.fetch(painelMsgId).catch(() => null);
-    if (msg) return msg.edit({ content: '📞 **Painel de Tickets**', components: [botao] });
-  }
 
   const msg = await canalPainel.send({
     content: '📞 **Painel de Tickets**',
@@ -116,7 +112,7 @@ client.on('interactionCreate', async interaction => {
         components: [botoes]
       });
 
-      const r = await interaction.reply({
+      await interaction.reply({
         content: `✅ Ticket criado: ${canal}`,
         ephemeral: true
       });
@@ -143,7 +139,7 @@ client.on('interactionCreate', async interaction => {
 
       await interaction.channel.setName(`ticket-${ticket.donoNome}-fechado`);
 
-      const r = await interaction.reply({ content: '🔴 Ticket fechado.', ephemeral: true });
+      await interaction.reply({ content: '🔴 Ticket fechado.', ephemeral: true });
       setTimeout(() => interaction.deleteReply().catch(() => {}), 5000);
     }
 
@@ -162,20 +158,32 @@ client.on('interactionCreate', async interaction => {
       if (!isStaff)
         return interaction.reply({ content: '❌ Apenas staff.', ephemeral: true });
 
-      const msgs = await interaction.channel.messages.fetch({ limit: 100 });
-      const texto = msgs
+      const mensagens = await interaction.channel.messages.fetch({ limit: 100 });
+      const texto = mensagens
         .reverse()
         .map(m => `[${m.author.tag}] ${m.content}`)
         .join('\n');
 
-      const canalLog = await interaction.guild.channels.fetch(CANAL_TRANSCRIPT_ID);
+      const embedTranscript = {
+        title: '📄 Transcript do Ticket',
+        description: `\`\`\`\n${texto || 'Sem mensagens'}\n\`\`\``,
+        footer: {
+          text: `Ticket de ${ticket.donoNome} | Salvo por ${interaction.user.username}`
+        },
+        color: 0x2ecc71
+      };
 
-      await canalLog.send({
-        embeds: [{
-          title: '📄 Transcript',
-          description: `\`\`\`\n${texto || 'Sem mensagens'}\n\`\`\``,
-          color: 0x2ecc71
-        }]
+      /* Envia para canal de fechamento */
+      const canalLog = await interaction.guild.channels.fetch(CANAL_TRANSCRIPT_ID);
+      await canalLog.send({ embeds: [embedTranscript] });
+
+      /* Envia DM para o telefonista */
+      const dono = await client.users.fetch(ticket.donoId);
+      dono.send({
+        content: '📌 **Resumo do seu atendimento**',
+        embeds: [embedTranscript]
+      }).catch(() => {
+        console.log(`⚠️ DM fechada para ${ticket.donoNome}`);
       });
 
       tickets.delete(interaction.channel.id);
