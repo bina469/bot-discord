@@ -117,16 +117,17 @@ async function atualizarPainel() {
   }
 }
 
+/* ================= NOTIFICAÇÕES ================= */
+async function enviarNotif(interaction, conteudo) {
+  await interaction.reply({ content: conteudo, ephemeral: true });
+  setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
+}
+
 /* ================= BOT ================= */
 client.once('ready', async () => {
   console.log(`✅ Logado como ${client.user.tag}`);
   await atualizarPainel();
 });
-
-async function enviarNotif(interaction, conteudo) {
-  await interaction.reply({ content: conteudo, ephemeral: true });
-  setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
-}
 
 client.on('interactionCreate', async interaction => {
   const user = interaction.user;
@@ -134,19 +135,15 @@ client.on('interactionCreate', async interaction => {
   /* ===== CONECTAR ===== */
   if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
     const telefone = interaction.customId.replace('entrar_', '');
-
-    if (estadoTelefones[telefone]) {
-      return enviarNotif(interaction, '⚠️ Telefone ocupado.');
-    }
+    if (estadoTelefones[telefone]) return enviarNotif(interaction, '⚠️ Telefone ocupado.');
 
     estadoTelefones[telefone] = { userId: user.id, nome: user.username, entrada: Date.now() };
-
     if (!atendimentosAtivos.has(user.id)) atendimentosAtivos.set(user.id, []);
     atendimentosAtivos.get(user.id).push(telefone);
 
     await registrarEvento(telefone, `🟢 ${hora()} — ${user.username} conectou`);
     await atualizarPainel();
-    await enviarNotif(interaction, `📞 Conectado ao telefone **${telefone}**`);
+    return enviarNotif(interaction, `📞 Conectado ao telefone **${telefone}**`);
   }
 
   /* ===== SAIR TODOS ===== */
@@ -159,7 +156,7 @@ client.on('interactionCreate', async interaction => {
     }
     atendimentosAtivos.delete(user.id);
     await atualizarPainel();
-    await enviarNotif(interaction, '📴 Desconectado de todos os telefones');
+    return enviarNotif(interaction, '📴 Desconectado de todos os telefones');
   }
 
   /* ===== MENU SAIR UM ===== */
@@ -203,7 +200,6 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel') {
     const telefone = interaction.values[0];
-
     const menuUser = new UserSelectMenuBuilder()
       .setCustomId(`transferir_user_${telefone}`)
       .setPlaceholder('Escolha o novo telefonista');
@@ -223,4 +219,19 @@ client.on('interactionCreate', async interaction => {
     );
 
     estadoTelefones[telefone] = { userId: novoId, nome: novoUser.username, entrada: Date.now() };
-    atendimentosAtivos.set(antigo.userId, atendimentosAtivos.get(antigo.userId
+    atendimentosAtivos.set(antigo.userId, atendimentosAtivos.get(antigo.userId).filter(t => t !== telefone));
+    if (!atendimentosAtivos.has(novoId)) atendimentosAtivos.set(novoId, []);
+    atendimentosAtivos.get(novoId).push(telefone);
+
+    await atualizarPainel();
+    await interaction.update({ content: `✅ Telefone **${telefone}** transferido para **${novoUser.username}**.`, components: [] });
+    setTimeout(() => interaction.deleteReply().catch(()=>{}), 3000);
+  }
+});
+
+client.login(TOKEN);
+
+/* ================= GIT ================= */
+// git add .
+// git commit -m "🎉 Corrigido erro de parêntese e painel funcional"
+// git push
