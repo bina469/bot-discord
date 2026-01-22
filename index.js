@@ -6,6 +6,8 @@ const {
   ButtonStyle,
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
+  ChannelType,
+  PermissionsBitField
 } = require('discord.js');
 
 const fs = require('fs');
@@ -25,6 +27,7 @@ const STATE_FILE = path.join(__dirname, 'state.json');
 // ===== Carregar estado =====
 let estadoTelefones = {};
 let atendimentosAtivos = new Map();
+
 try {
   if (fs.existsSync(STATE_FILE)) {
     const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
@@ -95,7 +98,7 @@ async function atualizarPainel() {
         .setCustomId(`entrar_${t}`)
         .setLabel(`📞 ${t}`)
         .setStyle(ButtonStyle.Success)
-        .setDisabled(!!estadoTelefones[t])
+        .setDisabled(false) // todos podem clicar, verificação acontece na função
     );
 
     const rows = [];
@@ -132,6 +135,17 @@ async function atualizarPainel() {
   }
 }
 
+// ===== Função para notificações temporárias =====
+async function avisoTemporario(canalId, texto, tempo = 5000) {
+  try {
+    const canal = await client.channels.fetch(canalId);
+    const msg = await canal.send({ content: texto });
+    setTimeout(() => msg.delete().catch(() => {}), tempo);
+  } catch (err) {
+    console.error('Erro ao enviar notificação temporária:', err);
+  }
+}
+
 // ===== READY =====
 client.once('ready', async () => {
   console.log('✅ Bot online');
@@ -151,81 +165,72 @@ client.once('ready', async () => {
   });
 });
 
-// ===== Função para mostrar notificações temporárias =====
-async function enviarNotificacao(canal, conteudo, duracao = 5000) {
-  try {
-    const msg = await canal.send(conteudo);
-    setTimeout(() => msg.delete().catch(() => {}), duracao);
-  } catch (err) {
-    console.error('Erro ao enviar notificação:', err);
-  }
-}
-
 // ===== INTERAÇÕES =====
 client.on('interactionCreate', async interaction => {
   try {
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isUserSelectMenu()) return;
     const userId = interaction.user.id;
-    const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID);
 
-    // --- Funções ---
+    // Conectar telefone
     const entrarTelefone = async (tel) => {
-      if (estadoTelefones[tel]) return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
+      if (estadoTelefones[tel]) return avisoTemporario(CANAL_PAINEL_PRESENCA_ID, `⚠️ Telefone ${tel} ocupado.`);
 
       estadoTelefones[tel] = { userId, nome: interaction.user.username };
       if (!atendimentosAtivos.has(userId)) atendimentosAtivos.set(userId, []);
       atendimentosAtivos.get(userId).push(tel);
-
       salvarEstado();
+
       await atualizarPainel();
-      await enviarNotificacao(canal, `📞 Conectado ao **${tel}**`);
+      avisoTemporario(CANAL_PAINEL_PRESENCA_ID, `📞 Conectado ao ${tel}`);
     };
 
+    // Desconectar todos
     const sairTodos = async () => {
       const lista = atendimentosAtivos.get(userId) || [];
       for (const tel of lista) delete estadoTelefones[tel];
       atendimentosAtivos.delete(userId);
-
       salvarEstado();
+
       await atualizarPainel();
-      await enviarNotificacao(canal, `📴 Desconectado de todos`);
+      avisoTemporario(CANAL_PAINEL_PRESENCA_ID, '📴 Desconectado de todos');
     };
 
+    // Desconectar um
     const sairUm = async (tel) => {
-      if (!estadoTelefones[tel]) return interaction.update({ content: '⚠️ Telefone já estava livre.', components: [] });
+      if (!estadoTelefones[tel]) return avisoTemporario(CANAL_PAINEL_PRESENCA_ID, `⚠️ Telefone ${tel} já estava livre.`);
 
       delete estadoTelefones[tel];
       atendimentosAtivos.set(userId, (atendimentosAtivos.get(userId) || []).filter(t => t !== tel));
-
       salvarEstado();
+
       await atualizarPainel();
-      await enviarNotificacao(canal, `📴 Saiu do **${tel}**`);
-      await interaction.update({ content: 'Operação concluída.', components: [] });
+      avisoTemporario(CANAL_PAINEL_PRESENCA_ID, `📴 Saiu do ${tel}`);
     };
 
+    // Forçar telefone
     const forcarTelefone = async (tel) => {
-      if (!estadoTelefones[tel]) return interaction.update({ content: '⚠️ Telefone já estava livre.', components: [] });
+      if (!estadoTelefones[tel]) return avisoTemporario(CANAL_PAINEL_PRESENCA_ID, `⚠️ Telefone ${tel} já estava livre.`);
 
       const antigoUserId = estadoTelefones[tel].userId;
       delete estadoTelefones[tel];
       atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
-
       salvarEstado();
+
       await atualizarPainel();
-      await enviarNotificacao(canal, `⚠️ **${tel}** desconectado à força.`);
-      await interaction.update({ content: 'Operação concluída.', components: [] });
+      avisoTemporario(CANAL_PAINEL_PRESENCA_ID, `⚠️ ${tel} desconectado à força`);
     };
 
+    // Transferir telefone
     const transferirTelefone = async (tel, novoUserId) => {
-      if (!estadoTelefones[tel]) return interaction.update({ content: '❌ Transferência inválida.', components: [] });
-
-      const antigoUserId = estadoTelefones[tel].userId;
-      atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
+      if (!estadoTelefones[tel]) return avisoTemporario(CANAL_PAINEL_PRESENCA_ID, `❌ Transferência inválida.`);
 
       const membro = await interaction.guild.members.fetch(novoUserId);
       if (!membro.roles.cache.has(CARGO_TELEFONISTA_ID)) {
-        return interaction.update({ content: '❌ Usuário não pode receber telefone.', components: [] });
+        return avisoTemporario(CANAL_PAINEL_PRESENCA_ID, '❌ Usuário não pode receber telefone.');
       }
+
+      const antigoUserId = estadoTelefones[tel].userId;
+      atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
 
       estadoTelefones[tel] = { userId: novoUserId, nome: membro.user.username };
       if (!atendimentosAtivos.has(novoUserId)) atendimentosAtivos.set(novoUserId, []);
@@ -233,8 +238,7 @@ client.on('interactionCreate', async interaction => {
 
       salvarEstado();
       await atualizarPainel();
-      await enviarNotificacao(canal, `🔁 **${tel}** transferido para **${membro.user.username}**.`);
-      await interaction.update({ content: 'Operação concluída.', components: [] });
+      avisoTemporario(CANAL_PAINEL_PRESENCA_ID, `🔁 ${tel} transferido para ${membro.user.username}`);
     };
 
     // ===== BOTÕES =====
@@ -244,74 +248,68 @@ client.on('interactionCreate', async interaction => {
       if (id === 'abrir_ticket') {
         const guild = interaction.guild;
         const categoria = guild.channels.cache.get(CATEGORIA_TICKET_ID);
-        if (!categoria) return interaction.reply({ content: '❌ Categoria de ticket não encontrada.', ephemeral: true });
+        if (!categoria) return avisoTemporario(CANAL_PAINEL_PRESENCA_ID, '❌ Categoria de ticket não encontrada.');
 
         await guild.channels.create({
           name: `ticket-${interaction.user.username}`,
-          type: 0,
+          type: ChannelType.GuildText,
           parent: CATEGORIA_TICKET_ID,
           permissionOverwrites: [
-            { id: guild.roles.everyone.id, deny: ['ViewChannel'] },
-            { id: interaction.user.id, allow: ['ViewChannel', 'SendMessages'] }
+            { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+            { id: userId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
           ]
         });
-        return interaction.reply({ content: '🎫 Ticket criado com sucesso!', ephemeral: true });
+
+        return avisoTemporario(CANAL_PAINEL_PRESENCA_ID, '🎫 Ticket criado com sucesso!');
       }
 
       if (id.startsWith('entrar_')) return entrarTelefone(id.replace('entrar_', ''));
       if (id === 'sair_todos') return sairTodos();
-
-      if (id === 'menu_sair') {
-        const lista = atendimentosAtivos.get(userId) || [];
-        if (!lista.length) return interaction.reply({ content: '⚠️ Você não está em nenhum telefone.', ephemeral: true });
-
-        return interaction.reply({
-          content: 'Selecione o telefone para sair:',
-          ephemeral: true,
-          components: [
-            new ActionRowBuilder().addComponents(
-              new StringSelectMenuBuilder()
-                .setCustomId('sair_um')
-                .setPlaceholder('Escolha o telefone')
-                .addOptions(lista.map(t => ({ label: t, value: t })))
-            )
-          ]
-        });
-      }
-
       if (id === 'menu_forcar') {
         const ocupados = Object.keys(estadoTelefones);
-        if (!ocupados.length) return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
+        if (!ocupados.length) return avisoTemporario(CANAL_PAINEL_PRESENCA_ID, '⚠️ Nenhum telefone em uso.');
 
         return interaction.reply({
           content: 'Selecione o telefone para forçar:',
           ephemeral: true,
-          components: [
-            new ActionRowBuilder().addComponents(
-              new StringSelectMenuBuilder()
-                .setCustomId('forcar_tel')
-                .setPlaceholder('Escolha o telefone')
-                .addOptions(ocupados.map(t => ({ label: `${t} — ${estadoTelefones[t].nome}`, value: t })))
-            )
-          ]
+          components: [new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId('forcar_tel')
+              .setPlaceholder('Escolha o telefone')
+              .addOptions(ocupados.map(t => ({ label: `${t} — ${estadoTelefones[t].nome}`, value: t })))
+          )]
         });
       }
 
       if (id === 'menu_transferir') {
         const ocupados = Object.keys(estadoTelefones);
-        if (!ocupados.length) return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
+        if (!ocupados.length) return avisoTemporario(CANAL_PAINEL_PRESENCA_ID, '⚠️ Nenhum telefone em uso.');
 
         return interaction.reply({
           content: 'Selecione o telefone para transferir:',
           ephemeral: true,
-          components: [
-            new ActionRowBuilder().addComponents(
-              new StringSelectMenuBuilder()
-                .setCustomId('transferir_tel')
-                .setPlaceholder('Escolha o telefone')
-                .addOptions(ocupados.map(t => ({ label: `${t} — ${estadoTelefones[t].nome}`, value: t })))
-            )
-          ]
+          components: [new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId('transferir_tel')
+              .setPlaceholder('Escolha o telefone')
+              .addOptions(ocupados.map(t => ({ label: `${t} — ${estadoTelefones[t].nome}`, value: t })))
+          )]
+        });
+      }
+
+      if (id === 'menu_sair') {
+        const lista = atendimentosAtivos.get(userId) || [];
+        if (!lista.length) return avisoTemporario(CANAL_PAINEL_PRESENCA_ID, '⚠️ Você não está em nenhum telefone.');
+
+        return interaction.reply({
+          content: 'Selecione o telefone para sair:',
+          ephemeral: true,
+          components: [new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId('sair_um')
+              .setPlaceholder('Escolha o telefone')
+              .addOptions(lista.map(t => ({ label: t, value: t })))
+          )]
         });
       }
     }
@@ -324,13 +322,11 @@ client.on('interactionCreate', async interaction => {
         telefoneSelecionado.set(userId, interaction.values[0]);
         return interaction.update({
           content: 'Agora selecione o usuário:',
-          components: [
-            new ActionRowBuilder().addComponents(
-              new UserSelectMenuBuilder()
-                .setCustomId('transferir_user')
-                .setPlaceholder('Escolha o usuário')
-            )
-          ]
+          components: [new ActionRowBuilder().addComponents(
+            new UserSelectMenuBuilder()
+              .setCustomId('transferir_user')
+              .setPlaceholder('Escolha o usuário')
+          )]
         });
       }
     }
@@ -346,11 +342,11 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// ===== PROTEÇÃO GLOBAL =====
+// ===== Proteção global =====
 process.on('unhandledRejection', err => console.error('UNHANDLED REJECTION:', err));
 process.on('uncaughtException', err => console.error('UNCAUGHT EXCEPTION:', err));
 
-// ===== LOGIN =====
+// ===== Login =====
 client.login(TOKEN);
 
 // ===== HTTP =====
