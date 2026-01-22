@@ -45,10 +45,7 @@ function salvarEstado() {
 
 // ===== Client =====
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
-  ]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
 });
 
 const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
@@ -84,7 +81,6 @@ async function limparTelefonesFantasmas() {
 // ===== Atualizar painel =====
 async function atualizarPainel() {
   await limparTelefonesFantasmas();
-
   try {
     const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID);
 
@@ -136,17 +132,6 @@ async function atualizarPainel() {
   }
 }
 
-// ===== Função utilitária para mensagens efêmeras (auto-delete) =====
-async function avisoTemporario(interaction, msg, tempoMs = 5000) {
-  const resposta = await interaction.reply({ content: msg, ephemeral: true });
-  setTimeout(async () => {
-    try {
-      const fetched = await interaction.fetchReply();
-      if (fetched.deletable) await fetched.delete();
-    } catch {}
-  }, tempoMs);
-}
-
 // ===== READY =====
 client.once('ready', async () => {
   console.log('✅ Bot online');
@@ -166,22 +151,34 @@ client.once('ready', async () => {
   });
 });
 
+// ===== Função para mostrar notificações temporárias =====
+async function enviarNotificacao(canal, conteudo, duracao = 5000) {
+  try {
+    const msg = await canal.send(conteudo);
+    setTimeout(() => msg.delete().catch(() => {}), duracao);
+  } catch (err) {
+    console.error('Erro ao enviar notificação:', err);
+  }
+}
+
 // ===== INTERAÇÕES =====
 client.on('interactionCreate', async interaction => {
   try {
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isUserSelectMenu()) return;
     const userId = interaction.user.id;
+    const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID);
 
+    // --- Funções ---
     const entrarTelefone = async (tel) => {
-      if (estadoTelefones[tel]) return avisoTemporario(interaction, '⚠️ Telefone ocupado.');
+      if (estadoTelefones[tel]) return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
 
       estadoTelefones[tel] = { userId, nome: interaction.user.username };
       if (!atendimentosAtivos.has(userId)) atendimentosAtivos.set(userId, []);
       atendimentosAtivos.get(userId).push(tel);
 
       salvarEstado();
-      await avisoTemporario(interaction, `📞 Conectado ao **${tel}**`);
       await atualizarPainel();
+      await enviarNotificacao(canal, `📞 Conectado ao **${tel}**`);
     };
 
     const sairTodos = async () => {
@@ -190,42 +187,44 @@ client.on('interactionCreate', async interaction => {
       atendimentosAtivos.delete(userId);
 
       salvarEstado();
-      await avisoTemporario(interaction, '📴 Desconectado de todos');
       await atualizarPainel();
+      await enviarNotificacao(canal, `📴 Desconectado de todos`);
     };
 
     const sairUm = async (tel) => {
-      if (!estadoTelefones[tel]) return avisoTemporario(interaction, '⚠️ Telefone já estava livre.');
+      if (!estadoTelefones[tel]) return interaction.update({ content: '⚠️ Telefone já estava livre.', components: [] });
 
       delete estadoTelefones[tel];
       atendimentosAtivos.set(userId, (atendimentosAtivos.get(userId) || []).filter(t => t !== tel));
 
       salvarEstado();
-      await avisoTemporario(interaction, `📴 Saiu do **${tel}**`);
       await atualizarPainel();
+      await enviarNotificacao(canal, `📴 Saiu do **${tel}**`);
+      await interaction.update({ content: 'Operação concluída.', components: [] });
     };
 
     const forcarTelefone = async (tel) => {
-      if (!estadoTelefones[tel]) return avisoTemporario(interaction, '⚠️ Telefone já estava livre.');
+      if (!estadoTelefones[tel]) return interaction.update({ content: '⚠️ Telefone já estava livre.', components: [] });
 
       const antigoUserId = estadoTelefones[tel].userId;
       delete estadoTelefones[tel];
       atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
 
       salvarEstado();
-      await avisoTemporario(interaction, `⚠️ **${tel}** desconectado à força.`);
       await atualizarPainel();
+      await enviarNotificacao(canal, `⚠️ **${tel}** desconectado à força.`);
+      await interaction.update({ content: 'Operação concluída.', components: [] });
     };
 
     const transferirTelefone = async (tel, novoUserId) => {
-      if (!estadoTelefones[tel]) return avisoTemporario(interaction, '❌ Transferência inválida.');
+      if (!estadoTelefones[tel]) return interaction.update({ content: '❌ Transferência inválida.', components: [] });
 
       const antigoUserId = estadoTelefones[tel].userId;
       atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
 
       const membro = await interaction.guild.members.fetch(novoUserId);
       if (!membro.roles.cache.has(CARGO_TELEFONISTA_ID)) {
-        return avisoTemporario(interaction, '❌ Usuário não pode receber telefone.');
+        return interaction.update({ content: '❌ Usuário não pode receber telefone.', components: [] });
       }
 
       estadoTelefones[tel] = { userId: novoUserId, nome: membro.user.username };
@@ -233,8 +232,9 @@ client.on('interactionCreate', async interaction => {
       atendimentosAtivos.get(novoUserId).push(tel);
 
       salvarEstado();
-      await avisoTemporario(interaction, `🔁 **${tel}** transferido para **${membro.user.username}**`);
       await atualizarPainel();
+      await enviarNotificacao(canal, `🔁 **${tel}** transferido para **${membro.user.username}**.`);
+      await interaction.update({ content: 'Operação concluída.', components: [] });
     };
 
     // ===== BOTÕES =====
@@ -244,7 +244,7 @@ client.on('interactionCreate', async interaction => {
       if (id === 'abrir_ticket') {
         const guild = interaction.guild;
         const categoria = guild.channels.cache.get(CATEGORIA_TICKET_ID);
-        if (!categoria) return avisoTemporario(interaction, '❌ Categoria de ticket não encontrada.');
+        if (!categoria) return interaction.reply({ content: '❌ Categoria de ticket não encontrada.', ephemeral: true });
 
         await guild.channels.create({
           name: `ticket-${interaction.user.username}`,
@@ -255,15 +255,15 @@ client.on('interactionCreate', async interaction => {
             { id: interaction.user.id, allow: ['ViewChannel', 'SendMessages'] }
           ]
         });
-
-        return avisoTemporario(interaction, '🎫 Ticket criado com sucesso!');
+        return interaction.reply({ content: '🎫 Ticket criado com sucesso!', ephemeral: true });
       }
 
       if (id.startsWith('entrar_')) return entrarTelefone(id.replace('entrar_', ''));
       if (id === 'sair_todos') return sairTodos();
+
       if (id === 'menu_sair') {
         const lista = atendimentosAtivos.get(userId) || [];
-        if (!lista.length) return avisoTemporario(interaction, '⚠️ Você não está em nenhum telefone.');
+        if (!lista.length) return interaction.reply({ content: '⚠️ Você não está em nenhum telefone.', ephemeral: true });
 
         return interaction.reply({
           content: 'Selecione o telefone para sair:',
@@ -281,7 +281,7 @@ client.on('interactionCreate', async interaction => {
 
       if (id === 'menu_forcar') {
         const ocupados = Object.keys(estadoTelefones);
-        if (!ocupados.length) return avisoTemporario(interaction, '⚠️ Nenhum telefone em uso.');
+        if (!ocupados.length) return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
 
         return interaction.reply({
           content: 'Selecione o telefone para forçar:',
@@ -299,7 +299,7 @@ client.on('interactionCreate', async interaction => {
 
       if (id === 'menu_transferir') {
         const ocupados = Object.keys(estadoTelefones);
-        if (!ocupados.length) return avisoTemporario(interaction, '⚠️ Nenhum telefone em uso.');
+        if (!ocupados.length) return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
 
         return interaction.reply({
           content: 'Selecione o telefone para transferir:',
