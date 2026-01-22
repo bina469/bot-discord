@@ -32,25 +32,34 @@ const client = new Client({
 const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
 const estadoTelefones = {};
 const atendimentosAtivos = new Map();
-const telefoneSelecionado = new Map(); 
+const telefoneSelecionado = new Map();
 let mensagemPainelId = null;
 
 /* ================= RELATÓRIO ================= */
+let mensagemRelatorioId = null;
+const logsRelatorio = [];
+
+function horarioBrasilia() {
+  return new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour12: false });
+}
+
 async function enviarRelatorio(acao, detalhes) {
   try {
     const canal = await client.channels.fetch(CANAL_RELATORIO_ID);
-    const dataBR = new Intl.DateTimeFormat('pt-BR', {
-      timeZone: 'America/Sao_Paulo',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
-    }).format(new Date());
+    logsRelatorio.push(`[${horarioBrasilia()}] ${acao} — ${detalhes}`);
+    const conteudo = `📋 **RELATÓRIO DO PAINEL**\n\n${logsRelatorio.join('\n')}`;
 
-    let texto = `📋 **RELATÓRIO DO PAINEL**\n[${dataBR}] ${acao}\n${detalhes}`;
-    await canal.send(texto);
+    if (mensagemRelatorioId) {
+      try {
+        const msg = await canal.messages.fetch(mensagemRelatorioId);
+        return msg.edit({ content: conteudo });
+      } catch {
+        mensagemRelatorioId = null;
+      }
+    }
+
+    const msg = await canal.send(conteudo);
+    mensagemRelatorioId = msg.id;
   } catch (err) {
     console.error('Erro ao enviar relatório:', err);
   }
@@ -148,7 +157,6 @@ client.on('interactionCreate', async interaction => {
       atendimentosAtivos.get(interaction.user.id).push(tel);
 
       await atualizarPainel();
-
       await enviarRelatorio('📞 Conexão', `Usuário **${interaction.user.username}** conectou ao telefone **${tel}**`);
       return replyEphemeral(`📞 Conectado ao **${tel}**`);
     }
