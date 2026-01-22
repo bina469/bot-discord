@@ -41,19 +41,29 @@ const relatorioDiario = [];
 const tempoAtivoTelefone = {};
 const tempoTotalUsuario = {};
 
+/* ===== TIMEZONE BR ===== */
+function getHoraBR() {
+  return new Date().toLocaleTimeString('pt-BR', {
+    timeZone: 'America/Sao_Paulo'
+  });
+}
+
 function getDataHoje() {
-  return new Date().toLocaleDateString('pt-BR');
+  return new Date().toLocaleDateString('pt-BR', {
+    timeZone: 'America/Sao_Paulo'
+  });
 }
 
 function registrarLog(acao, usuario, telefone) {
   relatorioDiario.push({
-    hora: new Date().toLocaleTimeString('pt-BR'),
+    hora: getHoraBR(),
     usuario,
     telefone,
     acao
   });
 }
 
+/* ================= RELATÓRIO RENDER ================= */
 async function atualizarRelatorio() {
   const canal = await client.channels.fetch(CANAL_RELATORIO_ID);
 
@@ -98,7 +108,10 @@ async function atualizarPainel() {
   ).join('\n');
 
   const botoesTelefone = telefones.map(t =>
-    new ButtonBuilder().setCustomId(`entrar_${t}`).setLabel(`📞 ${t}`).setStyle(ButtonStyle.Success)
+    new ButtonBuilder()
+      .setCustomId(`entrar_${t}`)
+      .setLabel(`📞 ${t}`)
+      .setStyle(ButtonStyle.Success)
   );
 
   const rows = [];
@@ -106,12 +119,14 @@ async function atualizarPainel() {
     rows.push(new ActionRowBuilder().addComponents(botoesTelefone.slice(i, i + 5)));
   }
 
-  rows.push(new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('sair_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId('menu_sair').setLabel('🟠 Desconectar UM').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('menu_transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('menu_forcar').setLabel('⚠️ Forçar Desconexão').setStyle(ButtonStyle.Secondary)
-  ));
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('sair_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('menu_sair').setLabel('🟠 Desconectar UM').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('menu_transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('menu_forcar').setLabel('⚠️ Forçar Desconexão').setStyle(ButtonStyle.Secondary)
+    )
+  );
 
   const texto = `📞 **PAINEL DE PRESENÇA**\n\n${status}`;
 
@@ -142,31 +157,57 @@ client.on('interactionCreate', async interaction => {
     /* ===== ENTRAR TELEFONE ===== */
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const tel = interaction.customId.replace('entrar_', '');
-      estadoTelefones[tel] = { userId: interaction.user.id, nome: interaction.user.username };
+
+      if (estadoTelefones[tel]) {
+        return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
+      }
+
+      estadoTelefones[tel] = {
+        userId: interaction.user.id,
+        nome: interaction.user.username
+      };
+
+      if (!atendimentosAtivos.has(interaction.user.id)) {
+        atendimentosAtivos.set(interaction.user.id, []);
+      }
+
+      atendimentosAtivos.get(interaction.user.id).push(tel);
+
       tempoAtivoTelefone[tel] = Date.now();
       registrarLog('Entrou', interaction.user.username, tel);
+
       await atualizarPainel();
       await atualizarRelatorio();
+
       return interaction.reply({ content: `📞 Conectado ao ${tel}`, ephemeral: true });
     }
 
     /* ===== SAIR TODOS ===== */
     if (interaction.isButton() && interaction.customId === 'sair_todos') {
       const lista = atendimentosAtivos.get(interaction.user.id) || [];
+
       for (const tel of lista) {
+        const duracao = Date.now() - tempoAtivoTelefone[tel];
+
         tempoTotalUsuario[interaction.user.username] =
-          (tempoTotalUsuario[interaction.user.username] || 0) + (Date.now() - tempoAtivoTelefone[tel]);
+          (tempoTotalUsuario[interaction.user.username] || 0) + duracao;
+
         registrarLog('Saiu', interaction.user.username, tel);
+
         delete estadoTelefones[tel];
+        delete tempoAtivoTelefone[tel];
       }
+
       atendimentosAtivos.delete(interaction.user.id);
+
       await atualizarPainel();
       await atualizarRelatorio();
+
       return interaction.reply({ content: '📴 Desconectado de todos', ephemeral: true });
     }
 
   } catch (err) {
-    console.error(err);
+    console.error('ERRO INTERACTION:', err);
   }
 });
 
