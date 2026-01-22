@@ -18,7 +18,6 @@ const PORT = process.env.PORT || 10000;
 const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_ABRIR_TICKET_ID = '1463407852583653479';
 const CATEGORIA_TICKET_ID = '1463703325034676334';
-
 const CARGO_TELEFONISTA_ID = '1463421663101059154';
 
 const STATE_FILE = path.join(__dirname, 'state.json');
@@ -137,6 +136,17 @@ async function atualizarPainel() {
   }
 }
 
+// ===== Função utilitária para mensagens efêmeras (auto-delete) =====
+async function avisoTemporario(interaction, msg, tempoMs = 5000) {
+  const resposta = await interaction.reply({ content: msg, ephemeral: true });
+  setTimeout(async () => {
+    try {
+      const fetched = await interaction.fetchReply();
+      if (fetched.deletable) await fetched.delete();
+    } catch {}
+  }, tempoMs);
+}
+
 // ===== READY =====
 client.once('ready', async () => {
   console.log('✅ Bot online');
@@ -162,16 +172,15 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isUserSelectMenu()) return;
     const userId = interaction.user.id;
 
-    // Funções de conexão/desconexão/transferência
     const entrarTelefone = async (tel) => {
-      if (estadoTelefones[tel]) return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
+      if (estadoTelefones[tel]) return avisoTemporario(interaction, '⚠️ Telefone ocupado.');
 
       estadoTelefones[tel] = { userId, nome: interaction.user.username };
       if (!atendimentosAtivos.has(userId)) atendimentosAtivos.set(userId, []);
       atendimentosAtivos.get(userId).push(tel);
 
       salvarEstado();
-      await interaction.reply({ content: `📞 Conectado ao **${tel}**`, ephemeral: true });
+      await avisoTemporario(interaction, `📞 Conectado ao **${tel}**`);
       await atualizarPainel();
     };
 
@@ -181,43 +190,42 @@ client.on('interactionCreate', async interaction => {
       atendimentosAtivos.delete(userId);
 
       salvarEstado();
-      await interaction.reply({ content: '📴 Desconectado de todos', ephemeral: true });
+      await avisoTemporario(interaction, '📴 Desconectado de todos');
       await atualizarPainel();
     };
 
     const sairUm = async (tel) => {
-      if (!estadoTelefones[tel]) return interaction.update({ content: '⚠️ Telefone já estava livre.', components: [] });
+      if (!estadoTelefones[tel]) return avisoTemporario(interaction, '⚠️ Telefone já estava livre.');
 
       delete estadoTelefones[tel];
       atendimentosAtivos.set(userId, (atendimentosAtivos.get(userId) || []).filter(t => t !== tel));
 
       salvarEstado();
-      await interaction.update({ content: `📴 Saiu do **${tel}**`, components: [] });
+      await avisoTemporario(interaction, `📴 Saiu do **${tel}**`);
       await atualizarPainel();
     };
 
     const forcarTelefone = async (tel) => {
-      if (!estadoTelefones[tel]) return interaction.update({ content: '⚠️ Telefone já estava livre.', components: [] });
+      if (!estadoTelefones[tel]) return avisoTemporario(interaction, '⚠️ Telefone já estava livre.');
 
       const antigoUserId = estadoTelefones[tel].userId;
       delete estadoTelefones[tel];
       atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
 
       salvarEstado();
-      await interaction.update({ content: `⚠️ **${tel}** desconectado à força.`, components: [] });
+      await avisoTemporario(interaction, `⚠️ **${tel}** desconectado à força.`);
       await atualizarPainel();
     };
 
     const transferirTelefone = async (tel, novoUserId) => {
-      if (!estadoTelefones[tel]) return interaction.update({ content: '❌ Transferência inválida.', components: [] });
+      if (!estadoTelefones[tel]) return avisoTemporario(interaction, '❌ Transferência inválida.');
 
       const antigoUserId = estadoTelefones[tel].userId;
       atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
 
       const membro = await interaction.guild.members.fetch(novoUserId);
-      // Apenas usuários com o cargo podem receber
       if (!membro.roles.cache.has(CARGO_TELEFONISTA_ID)) {
-        return interaction.update({ content: '❌ Usuário não pode receber telefone.', components: [] });
+        return avisoTemporario(interaction, '❌ Usuário não pode receber telefone.');
       }
 
       estadoTelefones[tel] = { userId: novoUserId, nome: membro.user.username };
@@ -225,7 +233,7 @@ client.on('interactionCreate', async interaction => {
       atendimentosAtivos.get(novoUserId).push(tel);
 
       salvarEstado();
-      await interaction.update({ content: `🔁 **${tel}** transferido para **${membro.user.username}**.`, components: [] });
+      await avisoTemporario(interaction, `🔁 **${tel}** transferido para **${membro.user.username}**`);
       await atualizarPainel();
     };
 
@@ -236,11 +244,11 @@ client.on('interactionCreate', async interaction => {
       if (id === 'abrir_ticket') {
         const guild = interaction.guild;
         const categoria = guild.channels.cache.get(CATEGORIA_TICKET_ID);
-        if (!categoria) return interaction.reply({ content: '❌ Categoria de ticket não encontrada.', ephemeral: true });
+        if (!categoria) return avisoTemporario(interaction, '❌ Categoria de ticket não encontrada.');
 
         await guild.channels.create({
           name: `ticket-${interaction.user.username}`,
-          type: 0, // GUILD_TEXT
+          type: 0,
           parent: CATEGORIA_TICKET_ID,
           permissionOverwrites: [
             { id: guild.roles.everyone.id, deny: ['ViewChannel'] },
@@ -248,15 +256,14 @@ client.on('interactionCreate', async interaction => {
           ]
         });
 
-        return interaction.reply({ content: '🎫 Ticket criado com sucesso!', ephemeral: true });
+        return avisoTemporario(interaction, '🎫 Ticket criado com sucesso!');
       }
 
       if (id.startsWith('entrar_')) return entrarTelefone(id.replace('entrar_', ''));
       if (id === 'sair_todos') return sairTodos();
-
       if (id === 'menu_sair') {
         const lista = atendimentosAtivos.get(userId) || [];
-        if (!lista.length) return interaction.reply({ content: '⚠️ Você não está em nenhum telefone.', ephemeral: true });
+        if (!lista.length) return avisoTemporario(interaction, '⚠️ Você não está em nenhum telefone.');
 
         return interaction.reply({
           content: 'Selecione o telefone para sair:',
@@ -274,7 +281,7 @@ client.on('interactionCreate', async interaction => {
 
       if (id === 'menu_forcar') {
         const ocupados = Object.keys(estadoTelefones);
-        if (!ocupados.length) return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
+        if (!ocupados.length) return avisoTemporario(interaction, '⚠️ Nenhum telefone em uso.');
 
         return interaction.reply({
           content: 'Selecione o telefone para forçar:',
@@ -292,7 +299,7 @@ client.on('interactionCreate', async interaction => {
 
       if (id === 'menu_transferir') {
         const ocupados = Object.keys(estadoTelefones);
-        if (!ocupados.length) return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
+        if (!ocupados.length) return avisoTemporario(interaction, '⚠️ Nenhum telefone em uso.');
 
         return interaction.reply({
           content: 'Selecione o telefone para transferir:',
