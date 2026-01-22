@@ -17,7 +17,9 @@ const PORT = process.env.PORT || 10000;
 
 const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_ABRIR_TICKET_ID = '1463407852583653479';
-const CATEGORIA_TICKET_ID = '1463703325034676334'; // Categoria tickets
+const CATEGORIA_TICKET_ID = '1463703325034676334';
+
+const CARGO_TELEFONISTA_ID = '1463421663101059154';
 
 const STATE_FILE = path.join(__dirname, 'state.json');
 
@@ -34,7 +36,6 @@ try {
   console.error('Erro ao ler state.json:', err);
 }
 
-// Salvar estado
 function salvarEstado() {
   const data = {
     estadoTelefones,
@@ -55,7 +56,7 @@ const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
 const telefoneSelecionado = new Map();
 let mensagemPainelId = null;
 
-// ===== Função para limpar telefones fantasmas =====
+// ===== Limpar telefones fantasmas =====
 async function limparTelefonesFantasmas() {
   try {
     const guild = client.guilds.cache.first();
@@ -79,14 +80,6 @@ async function limparTelefonesFantasmas() {
   } catch (err) {
     console.error('Erro ao limpar telefones fantasmas:', err);
   }
-}
-
-// ===== Função para enviar mensagens efêmeras temporárias =====
-async function replyTemporario(interaction, content, delay = 5000) {
-  const msg = await interaction.reply({ content, ephemeral: true, fetchReply: true });
-  setTimeout(() => {
-    msg.delete().catch(() => {});
-  }, delay);
 }
 
 // ===== Atualizar painel =====
@@ -167,18 +160,18 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   try {
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isUserSelectMenu()) return;
-
     const userId = interaction.user.id;
 
+    // Funções de conexão/desconexão/transferência
     const entrarTelefone = async (tel) => {
-      if (estadoTelefones[tel]) return replyTemporario(interaction, '⚠️ Telefone ocupado.');
+      if (estadoTelefones[tel]) return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
 
       estadoTelefones[tel] = { userId, nome: interaction.user.username };
       if (!atendimentosAtivos.has(userId)) atendimentosAtivos.set(userId, []);
       atendimentosAtivos.get(userId).push(tel);
 
       salvarEstado();
-      await replyTemporario(interaction, `📞 Conectado ao **${tel}**`);
+      await interaction.reply({ content: `📞 Conectado ao **${tel}**`, ephemeral: true });
       await atualizarPainel();
     };
 
@@ -188,7 +181,7 @@ client.on('interactionCreate', async interaction => {
       atendimentosAtivos.delete(userId);
 
       salvarEstado();
-      await replyTemporario(interaction, '📴 Desconectado de todos');
+      await interaction.reply({ content: '📴 Desconectado de todos', ephemeral: true });
       await atualizarPainel();
     };
 
@@ -221,19 +214,19 @@ client.on('interactionCreate', async interaction => {
       const antigoUserId = estadoTelefones[tel].userId;
       atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
 
-      let novoUsername = 'Usuário';
-      try {
-        const membro = await interaction.guild.members.fetch(novoUserId);
-        novoUsername = membro.user.username;
-      } catch {}
+      const membro = await interaction.guild.members.fetch(novoUserId);
+      // Apenas usuários com o cargo podem receber
+      if (!membro.roles.cache.has(CARGO_TELEFONISTA_ID)) {
+        return interaction.update({ content: '❌ Usuário não pode receber telefone.', components: [] });
+      }
 
-      estadoTelefones[tel] = { userId: novoUserId, nome: novoUsername };
+      estadoTelefones[tel] = { userId: novoUserId, nome: membro.user.username };
       if (!atendimentosAtivos.has(novoUserId)) atendimentosAtivos.set(novoUserId, []);
       atendimentosAtivos.get(novoUserId).push(tel);
 
       salvarEstado();
-      await interaction.update({ content: `🔁 **${tel}** transferido para **${novoUsername}**.`, components: [] });
-      await atualizarPainel(); // agora reflete no painel
+      await interaction.update({ content: `🔁 **${tel}** transferido para **${membro.user.username}**.`, components: [] });
+      await atualizarPainel();
     };
 
     // ===== BOTÕES =====
@@ -241,10 +234,9 @@ client.on('interactionCreate', async interaction => {
       const id = interaction.customId;
 
       if (id === 'abrir_ticket') {
-        // criar ticket na categoria
         const guild = interaction.guild;
         const categoria = guild.channels.cache.get(CATEGORIA_TICKET_ID);
-        if (!categoria) return replyTemporario(interaction, '❌ Categoria de ticket não encontrada.');
+        if (!categoria) return interaction.reply({ content: '❌ Categoria de ticket não encontrada.', ephemeral: true });
 
         await guild.channels.create({
           name: `ticket-${interaction.user.username}`,
@@ -256,7 +248,7 @@ client.on('interactionCreate', async interaction => {
           ]
         });
 
-        return replyTemporario(interaction, '🎫 Ticket criado com sucesso!');
+        return interaction.reply({ content: '🎫 Ticket criado com sucesso!', ephemeral: true });
       }
 
       if (id.startsWith('entrar_')) return entrarTelefone(id.replace('entrar_', ''));
@@ -264,7 +256,7 @@ client.on('interactionCreate', async interaction => {
 
       if (id === 'menu_sair') {
         const lista = atendimentosAtivos.get(userId) || [];
-        if (!lista.length) return replyTemporario(interaction, '⚠️ Você não está em nenhum telefone.');
+        if (!lista.length) return interaction.reply({ content: '⚠️ Você não está em nenhum telefone.', ephemeral: true });
 
         return interaction.reply({
           content: 'Selecione o telefone para sair:',
@@ -282,7 +274,7 @@ client.on('interactionCreate', async interaction => {
 
       if (id === 'menu_forcar') {
         const ocupados = Object.keys(estadoTelefones);
-        if (!ocupados.length) return replyTemporario(interaction, '⚠️ Nenhum telefone em uso.');
+        if (!ocupados.length) return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
 
         return interaction.reply({
           content: 'Selecione o telefone para forçar:',
@@ -300,7 +292,7 @@ client.on('interactionCreate', async interaction => {
 
       if (id === 'menu_transferir') {
         const ocupados = Object.keys(estadoTelefones);
-        if (!ocupados.length) return replyTemporario(interaction, '⚠️ Nenhum telefone em uso.');
+        if (!ocupados.length) return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
 
         return interaction.reply({
           content: 'Selecione o telefone para transferir:',
