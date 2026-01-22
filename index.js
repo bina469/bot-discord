@@ -217,7 +217,21 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel') {
       const tel = interaction.values[0];
       telefoneSelecionado.set(interaction.user.id, tel);
-      return replyEphemeral(`Telefone **${tel}** selecionado. Agora escolha o usuário:`);
+
+      // menu de selecionar usuário efêmero
+      const follow = await interaction.followUp({
+        content: `Telefone **${tel}** selecionado. Agora escolha o usuário:`,
+        ephemeral: true,
+        components: [
+          new ActionRowBuilder().addComponents(
+            new UserSelectMenuBuilder()
+              .setCustomId('transferir_user')
+              .setPlaceholder('Escolha o usuário')
+          )
+        ]
+      });
+      setTimeout(() => follow.delete().catch(() => {}), 10000);
+      return follow;
     }
 
     if (interaction.isUserSelectMenu() && interaction.customId === 'transferir_user') {
