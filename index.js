@@ -68,6 +68,123 @@ async function enviarRelatorio(acao, detalhes) {
 /* ================= TICKETS ================= */
 const ticketsAbertos = new Map();
 
+/* ===== ABRIR TICKET ===== */
+if (interaction.isButton() && interaction.customId === 'abrir_ticket') {
+  if (!interaction.member.roles.cache.has(CARGO_TELEFONISTA_ID))
+    return replyEphemeral('❌ Apenas telefonistas.');
+
+  if (ticketsAbertos.has(interaction.user.id))
+    return replyEphemeral('⚠️ Você já tem um ticket aberto.');
+
+  const canal = await interaction.guild.channels.create({
+    name: `ticket-${interaction.user.username}-aberto`,
+    type: ChannelType.GuildText,
+    parent: CATEGORIA_TICKET_ID,
+    permissionOverwrites: [
+      { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+      {
+        id: interaction.user.id,
+        allow: [
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.SendMessages
+        ]
+      },
+      {
+        id: CARGO_STAFF_ID,
+        allow: [
+          PermissionsBitField.Flags.ViewChannel,
+          PermissionsBitField.Flags.SendMessages
+        ]
+      }
+    ]
+  });
+
+  ticketsAbertos.set(interaction.user.id, canal.id);
+
+  const botoes = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('ticket_fechar')
+      .setLabel('🔒 Fechar Ticket')
+      .setStyle(ButtonStyle.Secondary),
+
+    new ButtonBuilder()
+      .setCustomId('ticket_excluir')
+      .setLabel('🗑️ Excluir Ticket')
+      .setStyle(ButtonStyle.Danger),
+
+    new ButtonBuilder()
+      .setCustomId('ticket_salvar')
+      .setLabel('💾 Salvar Ticket')
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  await canal.send({
+    content: `🎫 Ticket de **${interaction.user.username}**`,
+    components: [botoes]
+  });
+
+  return replyEphemeral(`✅ Ticket criado: ${canal}`);
+}
+
+/* ===== FECHAR TICKET ===== */
+if (interaction.isButton() && interaction.customId === 'ticket_fechar') {
+  if (!interaction.channel.name.includes(interaction.user.username))
+    return replyEphemeral('❌ Você não pode fechar este ticket.');
+
+  await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
+    SendMessages: false
+  });
+
+  await interaction.channel.setName(
+    interaction.channel.name.replace('-aberto', '-fechado')
+  );
+
+  return interaction.update({
+    content: '🔒 Ticket fechado.',
+    components: []
+  });
+}
+
+/* ===== EXCLUIR TICKET ===== */
+if (interaction.isButton() && interaction.customId === 'ticket_excluir') {
+  if (!interaction.channel.name.includes(interaction.user.username))
+    return replyEphemeral('❌ Você não pode excluir este ticket.');
+
+  ticketsAbertos.delete(interaction.user.id);
+
+  await interaction.update({
+    content: '🗑️ Ticket será excluído...',
+    components: []
+  });
+
+  setTimeout(() => interaction.channel.delete(), 2000);
+}
+
+/* ===== SALVAR TICKET (STAFF) ===== */
+if (interaction.isButton() && interaction.customId === 'ticket_salvar') {
+  if (!interaction.member.roles.cache.has(CARGO_STAFF_ID))
+    return replyEphemeral('❌ Apenas STAFF.');
+
+  const mensagens = await interaction.channel.messages.fetch({ limit: 100 });
+  const texto = mensagens
+    .reverse()
+    .map(m =>
+      `[${m.createdAt.toLocaleString('pt-BR')}] ${m.author.username}: ${m.content || '(sem texto)'}`
+    )
+    .join('\n');
+
+  const canalTranscript = await client.channels.fetch(CANAL_TRANSCRIPT_ID);
+
+  await canalTranscript.send({
+    content: `📁 **TRANSCRIPT — ${interaction.channel.name}**\n\n\`\`\`\n${texto}\n\`\`\``
+  });
+
+  return interaction.update({
+    content: '💾 Ticket salvo com sucesso.',
+    components: []
+  });
+}
+
 /* ================= PAINEL RENDER ================= */
 async function atualizarPainel() {
   try {
