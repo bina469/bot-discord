@@ -1,3 +1,4 @@
+require('dotenv').config();
 const {
   Client,
   GatewayIntentBits,
@@ -34,7 +35,7 @@ const client = new Client({
 const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
 const estadoTelefones = {};
 const atendimentosAtivos = new Map();
-const telefoneSelecionado = new Map(); // usado para transferir
+const telefoneSelecionado = new Map(); 
 let mensagemPainelId = null;
 
 /* ================= TICKETS ================= */
@@ -108,24 +109,17 @@ client.once('ready', async () => {
 /* ================= INTERAÇÕES ================= */
 client.on('interactionCreate', async interaction => {
   try {
-
     /* ===== ENTRAR TELEFONE ===== */
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const tel = interaction.customId.replace('entrar_', '');
-
-      if (estadoTelefones[tel]) {
-        return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
-      }
+      if (estadoTelefones[tel]) return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
 
       estadoTelefones[tel] = {
         userId: interaction.user.id,
         nome: interaction.user.username
       };
 
-      if (!atendimentosAtivos.has(interaction.user.id)) {
-        atendimentosAtivos.set(interaction.user.id, []);
-      }
-
+      if (!atendimentosAtivos.has(interaction.user.id)) atendimentosAtivos.set(interaction.user.id, []);
       atendimentosAtivos.get(interaction.user.id).push(tel);
 
       await atualizarPainel();
@@ -144,9 +138,7 @@ client.on('interactionCreate', async interaction => {
     /* ===== SAIR UM ===== */
     if (interaction.isButton() && interaction.customId === 'menu_sair') {
       const lista = atendimentosAtivos.get(interaction.user.id) || [];
-      if (!lista.length) {
-        return interaction.reply({ content: '⚠️ Você não está em nenhum telefone.', ephemeral: true });
-      }
+      if (!lista.length) return interaction.reply({ content: '⚠️ Você não está em nenhum telefone.', ephemeral: true });
 
       return interaction.reply({
         content: 'Selecione o telefone para sair:',
@@ -173,12 +165,10 @@ client.on('interactionCreate', async interaction => {
       return interaction.update({ content: `📴 Saiu do **${tel}**`, components: [] });
     }
 
-    /* ===== FORÇAR DESCONEXÃO (TELEFONE → AÇÃO) ===== */
+    /* ===== FORÇAR DESCONEXÃO ===== */
     if (interaction.isButton() && interaction.customId === 'menu_forcar') {
       const ocupados = Object.keys(estadoTelefones);
-      if (!ocupados.length) {
-        return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
-      }
+      if (!ocupados.length) return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
 
       return interaction.reply({
         content: 'Selecione o telefone para forçar desconexão:',
@@ -188,10 +178,7 @@ client.on('interactionCreate', async interaction => {
             new StringSelectMenuBuilder()
               .setCustomId('forcar_tel')
               .setPlaceholder('Escolha o telefone')
-              .addOptions(ocupados.map(t => ({
-                label: `${t} — ${estadoTelefones[t].nome}`,
-                value: t
-              })))
+              .addOptions(ocupados.map(t => ({ label: `${t} — ${estadoTelefones[t].nome}`, value: t })))
           )
         ]
       });
@@ -202,21 +189,16 @@ client.on('interactionCreate', async interaction => {
       const userId = estadoTelefones[tel].userId;
 
       delete estadoTelefones[tel];
-      atendimentosAtivos.set(
-        userId,
-        (atendimentosAtivos.get(userId) || []).filter(t => t !== tel)
-      );
+      atendimentosAtivos.set(userId, (atendimentosAtivos.get(userId) || []).filter(t => t !== tel));
 
       await atualizarPainel();
       return interaction.update({ content: `⚠️ Telefone **${tel}** desconectado à força.`, components: [] });
     }
 
-    /* ===== TRANSFERIR (TELEFONE → USUÁRIO) ===== */
+    /* ===== TRANSFERIR ===== */
     if (interaction.isButton() && interaction.customId === 'menu_transferir') {
       const ocupados = Object.keys(estadoTelefones);
-      if (!ocupados.length) {
-        return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
-      }
+      if (!ocupados.length) return interaction.reply({ content: '⚠️ Nenhum telefone em uso.', ephemeral: true });
 
       return interaction.reply({
         content: 'Selecione o telefone para transferir:',
@@ -226,10 +208,7 @@ client.on('interactionCreate', async interaction => {
             new StringSelectMenuBuilder()
               .setCustomId('transferir_tel')
               .setPlaceholder('Escolha o telefone')
-              .addOptions(ocupados.map(t => ({
-                label: `${t} — ${estadoTelefones[t].nome}`,
-                value: t
-              })))
+              .addOptions(ocupados.map(t => ({ label: `${t} — ${estadoTelefones[t].nome}`, value: t })))
           )
         ]
       });
@@ -255,25 +234,15 @@ client.on('interactionCreate', async interaction => {
       const novoUserId = interaction.values[0];
       const tel = telefoneSelecionado.get(interaction.user.id);
 
-      if (!tel || !estadoTelefones[tel]) {
-        return interaction.update({ content: '❌ Telefone inválido.', components: [] });
-      }
+      if (!tel || !estadoTelefones[tel]) return interaction.update({ content: '❌ Telefone inválido.', components: [] });
 
       const antigoUserId = estadoTelefones[tel].userId;
+      atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
 
-      atendimentosAtivos.set(
-        antigoUserId,
-        (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel)
-      );
+      const membro = await interaction.guild.members.fetch(novoUserId);
+      estadoTelefones[tel] = { userId: novoUserId, nome: membro.user.username };
 
-      estadoTelefones[tel] = {
-        userId: novoUserId,
-        nome: interaction.guild.members.cache.get(novoUserId)?.user.username || 'Usuário'
-      };
-
-      if (!atendimentosAtivos.has(novoUserId)) {
-        atendimentosAtivos.set(novoUserId, []);
-      }
+      if (!atendimentosAtivos.has(novoUserId)) atendimentosAtivos.set(novoUserId, []);
       atendimentosAtivos.get(novoUserId).push(tel);
 
       telefoneSelecionado.delete(interaction.user.id);
@@ -287,7 +256,6 @@ client.on('interactionCreate', async interaction => {
       if (!interaction.member.roles.cache.has(CARGO_TELEFONISTA_ID)) {
         return interaction.reply({ content: '❌ Apenas telefonistas.', ephemeral: true });
       }
-
       if (ticketsAbertos.has(interaction.user.id)) {
         return interaction.reply({ content: '⚠️ Você já tem ticket aberto.', ephemeral: true });
       }
