@@ -112,7 +112,6 @@ client.on('interactionCreate', async interaction => {
     const replyEphemeral = async (content, delay = 5000) => {
       await interaction.reply({ content, ephemeral: true });
       setTimeout(() => {
-        if (!interaction.replied) return;
         interaction.deleteReply().catch(() => {});
       }, delay);
     };
@@ -140,14 +139,13 @@ client.on('interactionCreate', async interaction => {
     }
 
     /* ===== MENUS TEMPORÁRIOS ===== */
-    const handleMenuEphemeral = async (tipo) => {
+    const handleMenu = async (tipo) => {
       const ocupados = Object.keys(estadoTelefones);
       if (!ocupados.length) return replyEphemeral('⚠️ Nenhum telefone em uso.');
 
       if (tipo === 'sair') {
         const lista = atendimentosAtivos.get(interaction.user.id) || [];
         if (!lista.length) return replyEphemeral('⚠️ Você não está em nenhum telefone.');
-
         return interaction.reply({
           content: 'Selecione o telefone para sair:',
           ephemeral: true,
@@ -188,56 +186,52 @@ client.on('interactionCreate', async interaction => {
     };
 
     /* ===== BOTÕES DE MENU ===== */
-    if (interaction.isButton() && interaction.customId === 'menu_sair') return handleMenuEphemeral('sair');
-    if (interaction.isButton() && interaction.customId === 'menu_forcar') return handleMenuEphemeral('forcar');
-    if (interaction.isButton() && interaction.customId === 'menu_transferir') return handleMenuEphemeral('transferir');
+    if (interaction.isButton()) {
+      if (interaction.customId === 'menu_sair') return handleMenu('sair');
+      if (interaction.customId === 'menu_forcar') return handleMenu('forcar');
+      if (interaction.customId === 'menu_transferir') return handleMenu('transferir');
+    }
 
     /* ===== SELECT MENUS ===== */
-    if (interaction.isStringSelectMenu() && interaction.customId === 'sair_um') {
-      const tel = interaction.values[0];
-      delete estadoTelefones[tel];
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === 'sair_um') {
+        const tel = interaction.values[0];
+        delete estadoTelefones[tel];
 
-      const lista = atendimentosAtivos.get(interaction.user.id) || [];
-      atendimentosAtivos.set(interaction.user.id, lista.filter(t => t !== tel));
+        const lista = atendimentosAtivos.get(interaction.user.id) || [];
+        atendimentosAtivos.set(interaction.user.id, lista.filter(t => t !== tel));
 
-      await atualizarPainel();
-      return replyEphemeral(`📴 Saiu do **${tel}**`);
-    }
+        await atualizarPainel();
+        return interaction.update({ content: `📴 Saiu do **${tel}**`, components: [] });
+      }
 
-    if (interaction.isStringSelectMenu() && interaction.customId === 'forcar_tel') {
-      const tel = interaction.values[0];
-      const userId = estadoTelefones[tel].userId;
-      delete estadoTelefones[tel];
-      atendimentosAtivos.set(userId, (atendimentosAtivos.get(userId) || []).filter(t => t !== tel));
+      if (interaction.customId === 'forcar_tel') {
+        const tel = interaction.values[0];
+        const userId = estadoTelefones[tel].userId;
+        delete estadoTelefones[tel];
+        atendimentosAtivos.set(userId, (atendimentosAtivos.get(userId) || []).filter(t => t !== tel));
 
-      await atualizarPainel();
-      return replyEphemeral(`⚠️ Telefone **${tel}** desconectado à força.`);
-    }
+        await atualizarPainel();
+        return interaction.update({ content: `⚠️ Telefone **${tel}** desconectado à força.`, components: [] });
+      }
 
-    if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel') {
-      const tel = interaction.values[0];
-      telefoneSelecionado.set(interaction.user.id, tel);
-
-      // menu de selecionar usuário efêmero
-      const follow = await interaction.followUp({
-        content: `Telefone **${tel}** selecionado. Agora escolha o usuário:`,
-        ephemeral: true,
-        components: [
-          new ActionRowBuilder().addComponents(
-            new UserSelectMenuBuilder()
-              .setCustomId('transferir_user')
-              .setPlaceholder('Escolha o usuário')
-          )
-        ]
-      });
-      setTimeout(() => follow.delete().catch(() => {}), 10000);
-      return follow;
+      if (interaction.customId === 'transferir_tel') {
+        const tel = interaction.values[0];
+        telefoneSelecionado.set(interaction.user.id, tel);
+        // Aqui enviamos a seleção de usuário com update para não dar problema
+        const menuUsuario = new ActionRowBuilder().addComponents(
+          new UserSelectMenuBuilder()
+            .setCustomId('transferir_user')
+            .setPlaceholder('Escolha o usuário')
+        );
+        return interaction.update({ content: `Telefone **${tel}** selecionado. Agora escolha o usuário:`, components: [menuUsuario] });
+      }
     }
 
     if (interaction.isUserSelectMenu() && interaction.customId === 'transferir_user') {
       const novoUserId = interaction.values[0];
       const tel = telefoneSelecionado.get(interaction.user.id);
-      if (!tel || !estadoTelefones[tel]) return replyEphemeral('❌ Telefone inválido.');
+      if (!tel || !estadoTelefones[tel]) return interaction.update({ content: '❌ Telefone inválido.', components: [] });
 
       const antigoUserId = estadoTelefones[tel].userId;
       atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
@@ -251,7 +245,7 @@ client.on('interactionCreate', async interaction => {
       telefoneSelecionado.delete(interaction.user.id);
 
       await atualizarPainel();
-      return replyEphemeral(`🔁 Telefone **${tel}** transferido.`);
+      return interaction.update({ content: `🔁 Telefone **${tel}** transferido.`, components: [] });
     }
 
     /* ===== TICKET ===== */
