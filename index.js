@@ -108,11 +108,12 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   try {
 
-    /* ================= PAINEL ================= */
+    /* ===== ENTRAR TELEFONE ===== */
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const tel = interaction.customId.replace('entrar_', '');
+
       if (estadoTelefones[tel]) {
-        return interaction.reply({ content: '⚠️ Telefone ocupado.', flags: 64 });
+        return interaction.reply({ content: '⚠️ Telefone ocupado.', ephemeral: true });
       }
 
       estadoTelefones[tel] = {
@@ -123,28 +124,104 @@ client.on('interactionCreate', async interaction => {
       if (!atendimentosAtivos.has(interaction.user.id)) {
         atendimentosAtivos.set(interaction.user.id, []);
       }
+
       atendimentosAtivos.get(interaction.user.id).push(tel);
 
       await atualizarPainel();
-      return interaction.reply({ content: `📞 Conectado ao **${tel}**`, flags: 64 });
+      return interaction.reply({ content: `📞 Conectado ao **${tel}**`, ephemeral: true });
     }
 
+    /* ===== SAIR TODOS ===== */
     if (interaction.isButton() && interaction.customId === 'sair_todos') {
       const lista = atendimentosAtivos.get(interaction.user.id) || [];
       for (const tel of lista) delete estadoTelefones[tel];
       atendimentosAtivos.delete(interaction.user.id);
       await atualizarPainel();
-      return interaction.reply({ content: '📴 Desconectado de todos', flags: 64 });
+      return interaction.reply({ content: '📴 Desconectado de todos', ephemeral: true });
     }
 
-    /* ================= TICKET ================= */
+    /* ===== MENU SAIR UM ===== */
+    if (interaction.isButton() && interaction.customId === 'menu_sair') {
+      const lista = atendimentosAtivos.get(interaction.user.id) || [];
+
+      if (!lista.length) {
+        return interaction.reply({ content: '⚠️ Você não está em nenhum telefone.', ephemeral: true });
+      }
+
+      return interaction.reply({
+        content: 'Selecione o telefone para sair:',
+        ephemeral: true,
+        components: [
+          new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId('sair_um')
+              .setPlaceholder('Escolha o telefone')
+              .addOptions(lista.map(t => ({ label: t, value: t })))
+          )
+        ]
+      });
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId === 'sair_um') {
+      const tel = interaction.values[0];
+      delete estadoTelefones[tel];
+
+      const lista = atendimentosAtivos.get(interaction.user.id) || [];
+      atendimentosAtivos.set(interaction.user.id, lista.filter(t => t !== tel));
+
+      await atualizarPainel();
+      return interaction.update({ content: `📴 Saiu do **${tel}**`, components: [] });
+    }
+
+    /* ===== MENU FORÇAR ===== */
+    if (interaction.isButton() && interaction.customId === 'menu_forcar') {
+      return interaction.reply({
+        content: 'Selecione o usuário:',
+        ephemeral: true,
+        components: [
+          new ActionRowBuilder().addComponents(
+            new UserSelectMenuBuilder()
+              .setCustomId('forcar_user')
+              .setPlaceholder('Escolha o usuário')
+          )
+        ]
+      });
+    }
+
+    if (interaction.isUserSelectMenu() && interaction.customId === 'forcar_user') {
+      const userId = interaction.values[0];
+      const lista = atendimentosAtivos.get(userId) || [];
+
+      for (const tel of lista) delete estadoTelefones[tel];
+      atendimentosAtivos.delete(userId);
+
+      await atualizarPainel();
+      return interaction.update({ content: '⚠️ Usuário desconectado à força.', components: [] });
+    }
+
+    /* ===== MENU TRANSFERIR ===== */
+    if (interaction.isButton() && interaction.customId === 'menu_transferir') {
+      return interaction.reply({
+        content: 'Selecione o usuário que receberá o telefone:',
+        ephemeral: true,
+        components: [
+          new ActionRowBuilder().addComponents(
+            new UserSelectMenuBuilder()
+              .setCustomId('transferir_user')
+              .setPlaceholder('Escolha o usuário')
+          )
+        ]
+      });
+    }
+
+    /* ===== TICKET ===== */
     if (interaction.isButton() && interaction.customId === 'abrir_ticket') {
       if (!interaction.member.roles.cache.has(CARGO_TELEFONISTA_ID)) {
-        return interaction.reply({ content: '❌ Apenas telefonistas.', flags: 64 });
+        return interaction.reply({ content: '❌ Apenas telefonistas.', ephemeral: true });
       }
 
       if (ticketsAbertos.has(interaction.user.id)) {
-        return interaction.reply({ content: '⚠️ Você já tem ticket aberto.', flags: 64 });
+        return interaction.reply({ content: '⚠️ Você já tem ticket aberto.', ephemeral: true });
       }
 
       const canal = await interaction.guild.channels.create({
@@ -152,30 +229,15 @@ client.on('interactionCreate', async interaction => {
         type: ChannelType.GuildText,
         parent: CATEGORIA_TICKET_ID,
         permissionOverwrites: [
-          {
-            id: interaction.guild.id,
-            deny: [PermissionsBitField.Flags.ViewChannel]
-          },
-          {
-            id: interaction.user.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages
-            ]
-          },
-          {
-            id: CARGO_STAFF_ID,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages
-            ]
-          }
+          { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+          { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
+          { id: CARGO_STAFF_ID, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
         ]
       });
 
       ticketsAbertos.set(interaction.user.id, canal.id);
       await canal.send('🎫 Ticket iniciado.');
-      return interaction.reply({ content: `✅ Ticket criado: ${canal}`, flags: 64 });
+      return interaction.reply({ content: `✅ Ticket criado: ${canal}`, ephemeral: true });
     }
 
   } catch (err) {
