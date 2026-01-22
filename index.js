@@ -18,6 +18,7 @@ const PORT = process.env.PORT || 10000;
 const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_ABRIR_TICKET_ID = '1463407852583653479';
 const CATEGORIA_TICKET_ID = '1463703325034676334';
+const CANAL_RELATORIO_ID = '1458342162981716039';
 
 const CARGO_TELEFONISTA_ID = '1463421663101059154';
 const CARGO_STAFF_ID = '838753379332915280';
@@ -33,6 +34,27 @@ const estadoTelefones = {};
 const atendimentosAtivos = new Map();
 const telefoneSelecionado = new Map(); 
 let mensagemPainelId = null;
+
+/* ================= RELATÓRIO ================= */
+async function enviarRelatorio(acao, detalhes) {
+  try {
+    const canal = await client.channels.fetch(CANAL_RELATORIO_ID);
+    const dataBR = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    }).format(new Date());
+
+    let texto = `📋 **RELATÓRIO DO PAINEL**\n[${dataBR}] ${acao}\n${detalhes}`;
+    await canal.send(texto);
+  } catch (err) {
+    console.error('Erro ao enviar relatório:', err);
+  }
+}
 
 /* ================= TICKETS ================= */
 const ticketsAbertos = new Map();
@@ -126,13 +148,18 @@ client.on('interactionCreate', async interaction => {
       atendimentosAtivos.get(interaction.user.id).push(tel);
 
       await atualizarPainel();
+
+      await enviarRelatorio('📞 Conexão', `Usuário **${interaction.user.username}** conectou ao telefone **${tel}**`);
       return replyEphemeral(`📞 Conectado ao **${tel}**`);
     }
 
     /* ===== SAIR TODOS ===== */
     if (interaction.isButton() && interaction.customId === 'sair_todos') {
       const lista = atendimentosAtivos.get(interaction.user.id) || [];
-      for (const tel of lista) delete estadoTelefones[tel];
+      for (const tel of lista) {
+        delete estadoTelefones[tel];
+        await enviarRelatorio('📴 Desconexão', `Usuário **${interaction.user.username}** desconectado do telefone **${tel}**`);
+      }
       atendimentosAtivos.delete(interaction.user.id);
       await atualizarPainel();
       return replyEphemeral('📴 Desconectado de todos');
@@ -202,23 +229,26 @@ client.on('interactionCreate', async interaction => {
         atendimentosAtivos.set(interaction.user.id, lista.filter(t => t !== tel));
 
         await atualizarPainel();
+        await enviarRelatorio('📴 Desconexão', `Usuário **${interaction.user.username}** desconectou do telefone **${tel}**`);
         return interaction.update({ content: `📴 Saiu do **${tel}**`, components: [] });
       }
 
       if (interaction.customId === 'forcar_tel') {
         const tel = interaction.values[0];
         const userId = estadoTelefones[tel].userId;
+        const nomeUser = estadoTelefones[tel].nome;
+
         delete estadoTelefones[tel];
         atendimentosAtivos.set(userId, (atendimentosAtivos.get(userId) || []).filter(t => t !== tel));
 
         await atualizarPainel();
+        await enviarRelatorio('⚠️ Forçar Desconexão', `Usuário **${nomeUser}** foi desconectado do telefone **${tel}** à força`);
         return interaction.update({ content: `⚠️ Telefone **${tel}** desconectado à força.`, components: [] });
       }
 
       if (interaction.customId === 'transferir_tel') {
         const tel = interaction.values[0];
         telefoneSelecionado.set(interaction.user.id, tel);
-        // Aqui enviamos a seleção de usuário com update para não dar problema
         const menuUsuario = new ActionRowBuilder().addComponents(
           new UserSelectMenuBuilder()
             .setCustomId('transferir_user')
@@ -234,6 +264,8 @@ client.on('interactionCreate', async interaction => {
       if (!tel || !estadoTelefones[tel]) return interaction.update({ content: '❌ Telefone inválido.', components: [] });
 
       const antigoUserId = estadoTelefones[tel].userId;
+      const antigoUserNome = estadoTelefones[tel].nome;
+
       atendimentosAtivos.set(antigoUserId, (atendimentosAtivos.get(antigoUserId) || []).filter(t => t !== tel));
 
       const membro = await interaction.guild.members.fetch(novoUserId);
@@ -245,6 +277,7 @@ client.on('interactionCreate', async interaction => {
       telefoneSelecionado.delete(interaction.user.id);
 
       await atualizarPainel();
+      await enviarRelatorio('🔁 Transferência', `Telefone **${tel}** transferido de **${antigoUserNome}** para **${membro.user.username}**`);
       return interaction.update({ content: `🔁 Telefone **${tel}** transferido.`, components: [] });
     }
 
