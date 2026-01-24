@@ -10,6 +10,7 @@ const {
   ChannelType,
   PermissionsBitField
 } = require('discord.js');
+const fs = require('fs');
 const http = require('http');
 
 /* ================= CONFIG ================= */
@@ -21,6 +22,7 @@ const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_ABRIR_TICKET_ID = '1463407852583653479';
 const CATEGORIA_TICKET_ID = '1463703325034676334';
 const CANAL_RELATORIO_ID = '1458342162981716039';
+const CANAL_TRANSCRIPT_ID = '1463408206129664128';
 
 const CARGO_TELEFONISTA_ID = '1463421663101059154';
 const CARGO_STAFF_ID = '838753379332915280';
@@ -72,24 +74,12 @@ async function enviarRelatorio(acao, detalhes) {
   mensagemRelatorioId = msg.id;
 }
 
-/* ================= TICKETS ================= */
-
-const ticketsAbertos = new Map();
-const ticketsFechados = new Set();
-
 /* ================= HELPERS ================= */
 
-async function responderTemp(interaction, texto, tempo = 5000) {
-  try {
-    if (interaction.replied || interaction.deferred) return;
-
-    const msg = await interaction.reply({
-      content: texto,
-      ephemeral: true
-    });
-
-    setTimeout(() => msg.delete().catch(() => {}), tempo);
-  } catch {}
+async function safeReply(interaction, data) {
+  if (interaction.replied || interaction.deferred)
+    return interaction.followUp({ ...data, ephemeral: true }).catch(() => {});
+  return interaction.reply({ ...data, ephemeral: true }).catch(() => {});
 }
 
 /* ================= PAINEL ================= */
@@ -114,31 +104,15 @@ async function atualizarPainel() {
 
   const rows = [];
 
-  for (let i = 0; i < botoes.length; i += 5) {
+  for (let i = 0; i < botoes.length; i += 5)
     rows.push(new ActionRowBuilder().addComponents(botoes.slice(i, i + 5)));
-  }
 
   rows.push(
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('sair_todos')
-        .setLabel('🔴 Desconectar TODOS')
-        .setStyle(ButtonStyle.Danger),
-
-      new ButtonBuilder()
-        .setCustomId('menu_sair')
-        .setLabel('🟠 Desconectar UM')
-        .setStyle(ButtonStyle.Secondary),
-
-      new ButtonBuilder()
-        .setCustomId('menu_transferir')
-        .setLabel('🔵 Transferir')
-        .setStyle(ButtonStyle.Primary),
-
-      new ButtonBuilder()
-        .setCustomId('menu_forcar')
-        .setLabel('⚠️ Forçar')
-        .setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId('sair_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('menu_sair').setLabel('🟠 Desconectar UM').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('menu_transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('menu_forcar').setLabel('⚠️ Forçar').setStyle(ButtonStyle.Secondary)
     )
   );
 
@@ -170,10 +144,7 @@ client.once('ready', async () => {
     content: '🎫 **ATENDIMENTO**',
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('abrir_ticket')
-          .setLabel('📂 Abrir Ticket')
-          .setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId('abrir_ticket').setLabel('📂 Abrir Ticket').setStyle(ButtonStyle.Primary)
       )
     ]
   });
@@ -184,11 +155,46 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   try {
 
-    /* ====== MENUS PAINEL ===== */
+    /* ================= PAINEL ================= */
+
+    if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
+      const tel = interaction.customId.replace('entrar_', '');
+
+      if (estadoTelefones[tel])
+        return safeReply(interaction, { content: '⚠️ Ocupado.' });
+
+      estadoTelefones[tel] = {
+        userId: interaction.user.id,
+        nome: interaction.user.username
+      };
+
+      atendimentosAtivos.set(interaction.user.id, [
+        ...(atendimentosAtivos.get(interaction.user.id) || []),
+        tel
+      ]);
+
+      await atualizarPainel();
+      await enviarRelatorio('📞 Conectado', `${interaction.user.username} → ${tel}`);
+
+      return safeReply(interaction, { content: `📞 Conectado ao ${tel}` });
+    }
+
+    if (interaction.isButton() && interaction.customId === 'sair_todos') {
+      const lista = atendimentosAtivos.get(interaction.user.id) || [];
+
+      lista.forEach(t => delete estadoTelefones[t]);
+      atendimentosAtivos.delete(interaction.user.id);
+
+      await atualizarPainel();
+
+      return safeReply(interaction, { content: '📴 Desconectado.' });
+    }
+
+    /* ===== MENUS ===== */
 
     if (interaction.isButton() && interaction.customId === 'menu_sair') {
       const lista = atendimentosAtivos.get(interaction.user.id) || [];
-      if (!lista.length) return responderTemp(interaction, '⚠️ Nenhum telefone.');
+      if (!lista.length) return safeReply(interaction, { content: '⚠️ Nenhum telefone.' });
 
       return interaction.reply({
         ephemeral: true,
@@ -205,18 +211,24 @@ client.on('interactionCreate', async interaction => {
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'sair_um') {
       const tel = interaction.values[0];
+
       delete estadoTelefones[tel];
+
+      atendimentosAtivos.set(
+        interaction.user.id,
+        (atendimentosAtivos.get(interaction.user.id) || []).filter(t => t !== tel)
+      );
 
       await atualizarPainel();
 
       return interaction.update({ content: `Saiu do ${tel}`, components: [] });
     }
 
-    /* ====== TICKET ===== */
+    /* ================= TICKET ================= */
 
     if (interaction.isButton() && interaction.customId === 'abrir_ticket') {
       if (ticketsAbertos.has(interaction.user.id))
-        return responderTemp(interaction, '⚠️ Já tem ticket.');
+        return safeReply(interaction, { content: '⚠️ Já tem ticket.' });
 
       await interaction.deferReply({ ephemeral: true });
 
@@ -225,23 +237,14 @@ client.on('interactionCreate', async interaction => {
         type: ChannelType.GuildText,
         parent: CATEGORIA_TICKET_ID,
         permissionOverwrites: [
-          {
-            id: interaction.guild.id,
-            deny: [PermissionsBitField.Flags.ViewChannel]
-          },
+          { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
           {
             id: interaction.user.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages
-            ]
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
           },
           {
             id: CARGO_STAFF_ID,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages
-            ]
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
           }
         ]
       });
@@ -253,7 +256,7 @@ client.on('interactionCreate', async interaction => {
         components: [
           new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('ticket_fechar').setLabel('🔒 Fechar').setStyle(ButtonStyle.Danger),
-            new ButtonBuilder().setCustomId('ticket_salvar').setLabel('💾 Salvar').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('ticket_salvar').setLabel('💾 Transcript').setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId('ticket_excluir').setLabel('🗑️ Excluir').setStyle(ButtonStyle.Secondary)
           )
         ]
