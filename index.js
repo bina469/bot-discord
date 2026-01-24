@@ -9,7 +9,8 @@ const {
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
   ChannelType,
-  PermissionsBitField
+  PermissionsBitField,
+  EmbedBuilder
 } = require('discord.js');
 
 const http = require('http');
@@ -30,7 +31,10 @@ const CARGO_STAFF_ID = '838753379332915280';
 /* ================= CLIENT ================= */
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers
+  ]
 });
 
 /* ================= ESTADO ================= */
@@ -50,19 +54,13 @@ const logsRelatorio = [];
 
 /* ================= HELPERS ================= */
 
-async function responderTemp(interaction, texto, tempo = 5000) {
-  if (!interaction.deferred && !interaction.replied) {
-    await interaction.deferReply({ ephemeral: true });
+async function responder(interaction, payload) {
+  if (interaction.replied || interaction.deferred) {
+    return interaction.followUp({ ...payload, ephemeral: true });
   }
 
-  await interaction.editReply({ content: texto });
-
-  setTimeout(() => {
-    interaction.deleteReply().catch(() => {});
-  }, tempo);
+  return interaction.reply({ ...payload, ephemeral: true });
 }
-
-/* ================= RELATÓRIO ================= */
 
 function horarioBrasilia() {
   return new Date().toLocaleString('pt-BR', {
@@ -71,12 +69,14 @@ function horarioBrasilia() {
   });
 }
 
+/* ================= RELATÓRIO ================= */
+
 async function enviarRelatorio(acao, detalhes) {
   const canal = await client.channels.fetch(CANAL_RELATORIO_ID);
 
   logsRelatorio.push(`[${horarioBrasilia()}] ${acao} — ${detalhes}`);
 
-  const texto = `📋 **RELATÓRIO DO PAINEL**\n\n${logsRelatorio.join('\n')}`;
+  const texto = `📋 **RELATÓRIO DO PAINEL**\n\n${logsRelatorio.slice(-30).join('\n')}`;
 
   if (mensagemRelatorioId) {
     try {
@@ -96,13 +96,11 @@ async function enviarRelatorio(acao, detalhes) {
 async function atualizarPainel() {
   const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID);
 
-  const status = telefones
-    .map(t =>
-      estadoTelefones[t]
-        ? `🔴 ${t} — ${estadoTelefones[t].nome}`
-        : `🟢 ${t} — Livre`
-    )
-    .join('\n');
+  const status = telefones.map(t =>
+    estadoTelefones[t]
+      ? `🔴 ${t} — ${estadoTelefones[t].nome}`
+      : `🟢 ${t} — Livre`
+  ).join('\n');
 
   const texto = `📞 **PAINEL DE PRESENÇA**\n\n${status}`;
 
@@ -148,14 +146,6 @@ async function atualizarPainel() {
     }
   }
 
-  const msgs = await canal.messages.fetch({ limit: 20 });
-  const antiga = msgs.find(m => m.author.id === client.user.id);
-
-  if (antiga) {
-    mensagemPainelId = antiga.id;
-    return antiga.edit({ content: texto, components: rows });
-  }
-
   const msg = await canal.send({ content: texto, components: rows });
   mensagemPainelId = msg.id;
 }
@@ -170,7 +160,7 @@ client.once('ready', async () => {
   const canalTicket = await client.channels.fetch(CANAL_ABRIR_TICKET_ID);
 
   await canalTicket.send({
-    content: '🎫 **ATENDIMENTO**',
+    content: '🎫 **ATENDIMENTO — ABRIR TICKET**',
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -187,12 +177,13 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   try {
 
-    /* ===== ENTRAR ===== */
+    /* ===== PAINEL PRESENÇA ===== */
+
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const tel = interaction.customId.replace('entrar_', '');
 
       if (estadoTelefones[tel])
-        return responderTemp(interaction, '⚠️ Telefone ocupado.');
+        return responder(interaction, { content: '⚠️ Telefone ocupado.' });
 
       estadoTelefones[tel] = {
         userId: interaction.user.id,
@@ -207,10 +198,9 @@ client.on('interactionCreate', async interaction => {
       await atualizarPainel();
       await enviarRelatorio('📞 Conectou', `${interaction.user.username} → ${tel}`);
 
-      return responderTemp(interaction, `📞 Conectado ao ${tel}`);
+      return responder(interaction, { content: `📞 Conectado ao ${tel}` });
     }
 
-    /* ===== SAIR TODOS ===== */
     if (interaction.isButton() && interaction.customId === 'sair_todos') {
       const lista = atendimentosAtivos.get(interaction.user.id) || [];
 
@@ -219,16 +209,14 @@ client.on('interactionCreate', async interaction => {
 
       await atualizarPainel();
 
-      return responderTemp(interaction, '📴 Desconectado de todos');
+      return responder(interaction, { content: '📴 Desconectado de todos.' });
     }
-
-    /* ===== MENUS ===== */
 
     if (interaction.isButton() && interaction.customId === 'menu_sair') {
       const lista = atendimentosAtivos.get(interaction.user.id) || [];
 
       if (!lista.length)
-        return responderTemp(interaction, '⚠️ Nenhum telefone seu.');
+        return responder(interaction, { content: '⚠️ Nenhum telefone seu.' });
 
       return interaction.reply({
         ephemeral: true,
@@ -281,8 +269,6 @@ client.on('interactionCreate', async interaction => {
       });
     }
 
-    /* ===== SELECT ===== */
-
     if (interaction.isStringSelectMenu()) {
 
       if (interaction.customId === 'sair_um') {
@@ -292,9 +278,7 @@ client.on('interactionCreate', async interaction => {
 
         atendimentosAtivos.set(
           interaction.user.id,
-          (atendimentosAtivos.get(interaction.user.id) || []).filter(
-            t => t !== tel
-          )
+          (atendimentosAtivos.get(interaction.user.id) || []).filter(t => t !== tel)
         );
 
         await atualizarPainel();
@@ -310,7 +294,7 @@ client.on('interactionCreate', async interaction => {
         await atualizarPainel();
 
         return interaction.update({
-          content: `⚠️ ${tel} forçado`,
+          content: `⚠️ ${tel} liberado`,
           components: []
         });
       }
@@ -348,6 +332,75 @@ client.on('interactionCreate', async interaction => {
         content: `🔁 ${tel} transferido`,
         components: []
       });
+    }
+
+    /* ===== TICKET ===== */
+
+    if (interaction.isButton() && interaction.customId === 'abrir_ticket') {
+      if (ticketsAbertos.has(interaction.user.id))
+        return responder(interaction, { content: '⚠️ Você já tem ticket aberto.' });
+
+      const canal = await interaction.guild.channels.create({
+        name: `ticket-${interaction.user.username}`,
+        type: ChannelType.GuildText,
+        parent: CATEGORIA_TICKET_ID,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.id,
+            deny: [PermissionsBitField.Flags.ViewChannel]
+          },
+          {
+            id: interaction.user.id,
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages]
+          },
+          {
+            id: CARGO_STAFF_ID,
+            allow: [PermissionsBitField.Flags.ViewChannel]
+          }
+        ]
+      });
+
+      ticketsAbertos.set(interaction.user.id, canal.id);
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('ticket_fechar')
+          .setLabel('🔒 Fechar')
+          .setStyle(ButtonStyle.Secondary),
+
+        new ButtonBuilder()
+          .setCustomId('ticket_excluir')
+          .setLabel('🗑 Excluir')
+          .setStyle(ButtonStyle.Danger),
+
+        new ButtonBuilder()
+          .setCustomId('ticket_transcript')
+          .setLabel('📄 Transcript')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await canal.send({
+        content: `🎫 Ticket de <@${interaction.user.id}>`,
+        components: [row]
+      });
+
+      return responder(interaction, { content: `✅ Ticket criado: ${canal}` });
+    }
+
+    if (interaction.isButton() && interaction.customId === 'ticket_fechar') {
+      await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
+        ViewChannel: false
+      });
+
+      return responder(interaction, { content: '🔒 Ticket fechado.' });
+    }
+
+    if (interaction.isButton() && interaction.customId === 'ticket_excluir') {
+      await responder(interaction, { content: '🗑 Ticket será deletado...' });
+
+      setTimeout(() => {
+        interaction.channel.delete().catch(() => {});
+      }, 3000);
     }
 
   } catch (err) {
