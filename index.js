@@ -1,6 +1,5 @@
-// === [ CORREÇÕES DE ESTABILIDADE — PAINEL + TICKET ] ===
-
 require('dotenv').config();
+
 const {
   Client,
   GatewayIntentBits,
@@ -12,12 +11,13 @@ const {
   ChannelType,
   PermissionsBitField
 } = require('discord.js');
+
 const http = require('http');
+
+/* ================= CONFIG ================= */
 
 const TOKEN = process.env.TOKEN;
 const PORT = process.env.PORT || 10000;
-
-/* ================= CONFIG ================= */
 
 const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_ABRIR_TICKET_ID = '1463407852583653479';
@@ -36,22 +36,26 @@ const client = new Client({
 /* ================= ESTADO ================= */
 
 const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
+
 const estadoTelefones = {};
 const atendimentosAtivos = new Map();
 const telefoneSelecionado = new Map();
+
+const ticketsAbertos = new Map();
 
 let mensagemPainelId = null;
 let mensagemRelatorioId = null;
 
 const logsRelatorio = [];
-const ticketsAbertos = new Map();
 
 /* ================= HELPERS ================= */
 
 async function responderTemp(interaction, texto, tempo = 5000) {
-  if (interaction.replied || interaction.deferred) return;
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ ephemeral: true });
+  }
 
-  const msg = await interaction.reply({ content: texto, ephemeral: true });
+  await interaction.editReply({ content: texto });
 
   setTimeout(() => {
     interaction.deleteReply().catch(() => {});
@@ -111,7 +115,13 @@ async function atualizarPainel() {
           .setStyle(ButtonStyle.Success)
       )
     ),
+
     new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('sair_todos')
+        .setLabel('🔴 Desconectar TODOS')
+        .setStyle(ButtonStyle.Danger),
+
       new ButtonBuilder()
         .setCustomId('menu_sair')
         .setLabel('🟠 Desconectar UM')
@@ -125,7 +135,7 @@ async function atualizarPainel() {
       new ButtonBuilder()
         .setCustomId('menu_forcar')
         .setLabel('⚠️ Forçar')
-        .setStyle(ButtonStyle.Danger)
+        .setStyle(ButtonStyle.Secondary)
     )
   ];
 
@@ -138,7 +148,7 @@ async function atualizarPainel() {
     }
   }
 
-  const msgs = await canal.messages.fetch({ limit: 10 });
+  const msgs = await canal.messages.fetch({ limit: 20 });
   const antiga = msgs.find(m => m.author.id === client.user.id);
 
   if (antiga) {
@@ -177,7 +187,7 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   try {
 
-    // ===== PAINEL ENTRAR =====
+    /* ===== ENTRAR ===== */
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const tel = interaction.customId.replace('entrar_', '');
 
@@ -200,75 +210,144 @@ client.on('interactionCreate', async interaction => {
       return responderTemp(interaction, `📞 Conectado ao ${tel}`);
     }
 
-    // ===== TICKET =====
-    if (interaction.isButton() && interaction.customId === 'abrir_ticket') {
-      if (ticketsAbertos.has(interaction.user.id))
-        return responderTemp(interaction, '⚠️ Você já tem ticket.');
+    /* ===== SAIR TODOS ===== */
+    if (interaction.isButton() && interaction.customId === 'sair_todos') {
+      const lista = atendimentosAtivos.get(interaction.user.id) || [];
 
-      const canal = await interaction.guild.channels.create({
-        name: `ticket-${interaction.user.username}`,
-        type: ChannelType.GuildText,
-        parent: CATEGORIA_TICKET_ID,
-        permissionOverwrites: [
-          {
-            id: interaction.guild.id,
-            deny: [PermissionsBitField.Flags.ViewChannel]
-          },
-          {
-            id: interaction.user.id,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages
-            ]
-          },
-          {
-            id: CARGO_STAFF_ID,
-            allow: [
-              PermissionsBitField.Flags.ViewChannel,
-              PermissionsBitField.Flags.SendMessages
-            ]
-          }
-        ]
-      });
+      lista.forEach(t => delete estadoTelefones[t]);
+      atendimentosAtivos.delete(interaction.user.id);
 
-      ticketsAbertos.set(interaction.user.id, canal.id);
+      await atualizarPainel();
 
-      await canal.send({
-        content: '🎫 Ticket iniciado.',
+      return responderTemp(interaction, '📴 Desconectado de todos');
+    }
+
+    /* ===== MENUS ===== */
+
+    if (interaction.isButton() && interaction.customId === 'menu_sair') {
+      const lista = atendimentosAtivos.get(interaction.user.id) || [];
+
+      if (!lista.length)
+        return responderTemp(interaction, '⚠️ Nenhum telefone seu.');
+
+      return interaction.reply({
+        ephemeral: true,
         components: [
           new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId('ticket_fechar')
-              .setLabel('🔒 Fechar')
-              .setStyle(ButtonStyle.Secondary),
-
-            new ButtonBuilder()
-              .setCustomId('ticket_transcript')
-              .setLabel('📄 Transcript')
-              .setStyle(ButtonStyle.Primary),
-
-            new ButtonBuilder()
-              .setCustomId('ticket_excluir')
-              .setLabel('🗑 Excluir')
-              .setStyle(ButtonStyle.Danger)
+            new StringSelectMenuBuilder()
+              .setCustomId('sair_um')
+              .setPlaceholder('Selecione')
+              .addOptions(lista.map(t => ({ label: t, value: t })))
           )
         ]
       });
-
-      return responderTemp(interaction, `✅ Ticket criado: ${canal}`);
     }
 
-    // ===== FECHAR TICKET =====
-    if (interaction.isButton() && interaction.customId === 'ticket_excluir') {
-      const canal = interaction.channel;
+    if (interaction.isButton() && interaction.customId === 'menu_forcar') {
+      return interaction.reply({
+        ephemeral: true,
+        components: [
+          new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId('forcar_tel')
+              .setPlaceholder('Selecione')
+              .addOptions(
+                Object.keys(estadoTelefones).map(t => ({
+                  label: `${t} — ${estadoTelefones[t].nome}`,
+                  value: t
+                }))
+              )
+          )
+        ]
+      });
+    }
 
-      const dono = [...ticketsAbertos.entries()].find(
-        ([, id]) => id === canal.id
-      );
+    if (interaction.isButton() && interaction.customId === 'menu_transferir') {
+      return interaction.reply({
+        ephemeral: true,
+        components: [
+          new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId('transferir_tel')
+              .setPlaceholder('Selecione')
+              .addOptions(
+                Object.keys(estadoTelefones).map(t => ({
+                  label: `${t} — ${estadoTelefones[t].nome}`,
+                  value: t
+                }))
+              )
+          )
+        ]
+      });
+    }
 
-      if (dono) ticketsAbertos.delete(dono[0]);
+    /* ===== SELECT ===== */
 
-      await canal.delete();
+    if (interaction.isStringSelectMenu()) {
+
+      if (interaction.customId === 'sair_um') {
+        const tel = interaction.values[0];
+
+        delete estadoTelefones[tel];
+
+        atendimentosAtivos.set(
+          interaction.user.id,
+          (atendimentosAtivos.get(interaction.user.id) || []).filter(
+            t => t !== tel
+          )
+        );
+
+        await atualizarPainel();
+
+        return interaction.update({ content: `📴 Saiu do ${tel}`, components: [] });
+      }
+
+      if (interaction.customId === 'forcar_tel') {
+        const tel = interaction.values[0];
+
+        delete estadoTelefones[tel];
+
+        await atualizarPainel();
+
+        return interaction.update({
+          content: `⚠️ ${tel} forçado`,
+          components: []
+        });
+      }
+
+      if (interaction.customId === 'transferir_tel') {
+        telefoneSelecionado.set(interaction.user.id, interaction.values[0]);
+
+        return interaction.update({
+          content: 'Escolha usuário:',
+          components: [
+            new ActionRowBuilder().addComponents(
+              new UserSelectMenuBuilder().setCustomId('transferir_user')
+            )
+          ]
+        });
+      }
+    }
+
+    if (interaction.isUserSelectMenu() && interaction.customId === 'transferir_user') {
+      const tel = telefoneSelecionado.get(interaction.user.id);
+
+      const novoUserId = interaction.values[0];
+      const membro = await interaction.guild.members.fetch(novoUserId);
+
+      estadoTelefones[tel] = {
+        userId: novoUserId,
+        nome: membro.user.username
+      };
+
+      telefoneSelecionado.delete(interaction.user.id);
+
+      await atualizarPainel();
+
+      return interaction.update({
+        content: `🔁 ${tel} transferido`,
+        components: []
+      });
     }
 
   } catch (err) {
