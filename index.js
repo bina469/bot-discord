@@ -1,3 +1,5 @@
+// === INDEX CORRIGIDO DEFINITIVO ===
+
 require('dotenv').config();
 const {
   Client,
@@ -10,6 +12,7 @@ const {
   ChannelType,
   PermissionsBitField
 } = require('discord.js');
+
 const http = require('http');
 
 /* ================= CONFIG ================= */
@@ -56,20 +59,26 @@ function horarioBrasilia() {
 }
 
 async function responderTemp(interaction, texto, tempo = 5000) {
-  if (interaction.replied || interaction.deferred) return;
+  let msg;
 
-  const msg = await interaction.reply({
-    content: texto,
-    fetchReply: true,
-    ephemeral: true
-  });
+  if (interaction.deferred || interaction.replied) {
+    msg = await interaction.followUp({
+      content: texto,
+      ephemeral: true
+    });
+  } else {
+    msg = await interaction.reply({
+      content: texto,
+      ephemeral: true
+    });
+  }
 
   setTimeout(() => {
-    interaction.deleteReply().catch(() => {});
+    msg.delete().catch(() => {});
   }, tempo);
 }
 
-/* ================= RELATÓRIO PAINEL ================= */
+/* ================= RELATÓRIO ================= */
 
 let mensagemRelatorioId = null;
 const logsRelatorio = [];
@@ -77,9 +86,7 @@ const logsRelatorio = [];
 async function enviarRelatorio(acao, detalhes) {
   const canal = await client.channels.fetch(CANAL_RELATORIO_ID);
 
-  logsRelatorio.push(
-    `[${horarioBrasilia()}] ${acao} — ${detalhes}`
-  );
+  logsRelatorio.push(`[${horarioBrasilia()}] ${acao} — ${detalhes}`);
 
   const texto = `📋 **RELATÓRIO DO PAINEL**\n\n${logsRelatorio.join('\n')}`;
 
@@ -96,7 +103,7 @@ async function enviarRelatorio(acao, detalhes) {
   mensagemRelatorioId = msg.id;
 }
 
-/* ================= ATUALIZAR PAINEL ================= */
+/* ================= PAINEL ================= */
 
 async function atualizarPainel() {
   const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID);
@@ -116,16 +123,15 @@ async function atualizarPainel() {
 
   const rows = [];
 
-  for (let i = 0; i < botoes.length; i += 5) {
+  for (let i = 0; i < botoes.length; i += 5)
     rows.push(new ActionRowBuilder().addComponents(botoes.slice(i, i + 5)));
-  }
 
   rows.push(
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('sair_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId('menu_sair').setLabel('🟠 Desconectar UM').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('menu_transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('menu_forcar').setLabel('⚠️ Forçar Desconexão').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId('menu_forcar').setLabel('⚠️ Forçar').setStyle(ButtonStyle.Secondary)
     )
   );
 
@@ -144,47 +150,12 @@ async function atualizarPainel() {
   mensagemPainelId = msg.id;
 }
 
-/* ================= TICKETS ================= */
-
-const ticketsAbertos = new Map();
-
-function botoesTicket() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('ticket_abrir').setLabel('🟢 Abrir').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('ticket_fechar').setLabel('🔴 Fechar').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('ticket_salvar').setLabel('💾 Salvar').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('ticket_excluir').setLabel('🗑️ Excluir').setStyle(ButtonStyle.Danger)
-  );
-}
-
-/* ================= READY ================= */
-
-client.once('ready', async () => {
-  console.log('✅ Bot online');
-
-  await atualizarPainel();
-
-  const canalTicket = await client.channels.fetch(CANAL_ABRIR_TICKET_ID);
-
-  await canalTicket.send({
-    content: '🎫 **ATENDIMENTO**',
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('abrir_ticket')
-          .setLabel('📂 Iniciar Atendimento')
-          .setStyle(ButtonStyle.Primary)
-      )
-    ]
-  });
-});
-
 /* ================= INTERAÇÕES ================= */
 
 client.on('interactionCreate', async interaction => {
   try {
 
-    /* ========= PAINEL ========= */
+    /* ====== CONECTAR ===== */
 
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const tel = interaction.customId.replace('entrar_', '');
@@ -197,10 +168,9 @@ client.on('interactionCreate', async interaction => {
         nome: interaction.user.username
       };
 
-      atendimentosAtivos.set(interaction.user.id, [
-        ...(atendimentosAtivos.get(interaction.user.id) || []),
-        tel
-      ]);
+      const atual = atendimentosAtivos.get(interaction.user.id) || [];
+      atual.push(tel);
+      atendimentosAtivos.set(interaction.user.id, atual);
 
       await atualizarPainel();
       await enviarRelatorio('📞 Conectou', `${interaction.user.username} → ${tel}`);
@@ -208,122 +178,172 @@ client.on('interactionCreate', async interaction => {
       return responderTemp(interaction, `📞 Conectado ao **${tel}**`);
     }
 
-    if (interaction.isButton() && interaction.customId === 'sair_todos') {
+    /* ====== MENUS ===== */
+
+    if (interaction.isButton() && interaction.customId === 'menu_sair') {
 
       const lista = atendimentosAtivos.get(interaction.user.id) || [];
 
-      lista.forEach(t => {
-        delete estadoTelefones[t];
-        enviarRelatorio('📴 Saiu', `${interaction.user.username} → ${t}`);
-      });
+      if (!lista.length)
+        return responderTemp(interaction, '⚠️ Você não está em nenhum telefone.');
 
-      atendimentosAtivos.delete(interaction.user.id);
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId('sair_um')
+        .setPlaceholder('Selecione o telefone')
+        .addOptions(lista.map(t => ({ label: t, value: t })));
+
+      return interaction.reply({
+        components: [new ActionRowBuilder().addComponents(menu)],
+        ephemeral: true
+      });
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId === 'sair_um') {
+      const tel = interaction.values[0];
+
+      delete estadoTelefones[tel];
+
+      atendimentosAtivos.set(
+        interaction.user.id,
+        (atendimentosAtivos.get(interaction.user.id) || []).filter(t => t !== tel)
+      );
 
       await atualizarPainel();
+      await enviarRelatorio('📴 Saiu', `${interaction.user.username} → ${tel}`);
 
-      return responderTemp(interaction, '📴 Desconectado de todos');
+      return responderTemp(interaction, `📴 Saiu do **${tel}**`);
     }
 
-    /* ========= TICKET ========= */
+    /* ====== TRANSFERIR ===== */
 
-    if (interaction.isButton() && interaction.customId === 'abrir_ticket') {
+    if (interaction.isButton() && interaction.customId === 'menu_transferir') {
 
-      if (ticketsAbertos.has(interaction.user.id))
-        return responderTemp(interaction, '⚠️ Você já possui ticket.');
+      const lista = atendimentosAtivos.get(interaction.user.id) || [];
 
-      const canal = await interaction.guild.channels.create({
-        name: `ticket-${interaction.user.username}-aberto`,
-        type: ChannelType.GuildText,
-        parent: CATEGORIA_TICKET_ID,
-        permissionOverwrites: [
-          { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-          { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
-          { id: CARGO_STAFF_ID, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
-        ]
+      if (!lista.length)
+        return responderTemp(interaction, '⚠️ Você não está conectado.');
+
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId('transferir_tel')
+        .setPlaceholder('Telefone')
+        .addOptions(lista.map(t => ({ label: t, value: t })));
+
+      return interaction.reply({
+        components: [new ActionRowBuilder().addComponents(menu)],
+        ephemeral: true
       });
-
-      ticketsAbertos.set(interaction.user.id, canal.id);
-
-      await canal.send({
-        content: '🎫 Ticket iniciado.',
-        components: [botoesTicket()]
-      });
-
-      return responderTemp(interaction, `✅ Ticket criado: ${canal}`);
     }
 
-    if (interaction.isButton() && interaction.channel.parentId === CATEGORIA_TICKET_ID) {
+    if (interaction.isStringSelectMenu() && interaction.customId === 'transferir_tel') {
+      telefoneSelecionado.set(interaction.user.id, interaction.values[0]);
 
-      await interaction.deferUpdate();
+      return interaction.reply({
+        components: [
+          new ActionRowBuilder().addComponents(
+            new UserSelectMenuBuilder().setCustomId('transferir_user')
+          )
+        ],
+        ephemeral: true
+      });
+    }
 
-      const donoId = [...ticketsAbertos.entries()].find(e => e[1] === interaction.channel.id)?.[0];
+    if (interaction.isUserSelectMenu() && interaction.customId === 'transferir_user') {
+      const tel = telefoneSelecionado.get(interaction.user.id);
+      const novo = interaction.values[0];
 
-      const isStaff = interaction.member.roles.cache.has(CARGO_STAFF_ID);
+      const antigo = estadoTelefones[tel];
 
-      if (interaction.customId === 'ticket_fechar') {
+      estadoTelefones[tel] = {
+        userId: novo,
+        nome: (await interaction.guild.members.fetch(novo)).user.username
+      };
 
-        await interaction.channel.setName(interaction.channel.name.replace('-aberto', '-fechado'));
+      atendimentosAtivos.set(
+        novo,
+        [...(atendimentosAtivos.get(novo) || []), tel]
+      );
 
-        await interaction.channel.permissionOverwrites.edit(donoId, { SendMessages: false });
-      }
+      atendimentosAtivos.set(
+        interaction.user.id,
+        (atendimentosAtivos.get(interaction.user.id) || []).filter(t => t !== tel)
+      );
 
-      if (interaction.customId === 'ticket_abrir' && isStaff) {
+      telefoneSelecionado.delete(interaction.user.id);
 
-        await interaction.channel.setName(interaction.channel.name.replace('-fechado', '-aberto'));
+      await atualizarPainel();
+      await enviarRelatorio('🔁 Transferiu', `${antigo.nome} → ${tel} → ${estadoTelefones[tel].nome}`);
 
-        await interaction.channel.permissionOverwrites.edit(donoId, { SendMessages: true });
-      }
+      return responderTemp(interaction, '🔁 Transferência concluída');
+    }
 
-      if (interaction.customId === 'ticket_excluir' && isStaff) {
+    /* ====== FORÇAR ===== */
 
-        ticketsAbertos.delete(donoId);
-        await interaction.channel.delete();
-      }
+    if (interaction.isButton() && interaction.customId === 'menu_forcar') {
 
-      if (
-        interaction.customId === 'ticket_salvar' &&
-        interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)
-      ) {
+      const ocupados = Object.entries(estadoTelefones);
 
-        const msgs = await interaction.channel.messages.fetch({ limit: 100 });
+      if (!ocupados.length)
+        return responderTemp(interaction, '⚠️ Nenhum telefone ocupado.');
 
-        const texto = msgs
-          .reverse()
-          .map(m => `[${m.author.username}] ${m.content}`)
-          .join('\n');
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId('forcar_tel')
+        .setPlaceholder('Telefone')
+        .addOptions(ocupados.map(([t]) => ({ label: t, value: t })));
 
-        const dono = await interaction.guild.members.fetch(donoId);
+      return interaction.reply({
+        components: [new ActionRowBuilder().addComponents(menu)],
+        ephemeral: true
+      });
+    }
 
-        const data = horarioBrasilia();
+    if (interaction.isStringSelectMenu() && interaction.customId === 'forcar_tel') {
 
-        await dono.send(
-          `📋 **Resumo do Ticket**\n👤 ${dono}\n📅 ${data}\n\n${texto}`
-        );
+      const tel = interaction.values[0];
+      const dono = estadoTelefones[tel];
 
-        const transcript = await client.channels.fetch(CANAL_TRANSCRIPT_ID);
+      atendimentosAtivos.set(
+        dono.userId,
+        (atendimentosAtivos.get(dono.userId) || []).filter(t => t !== tel)
+      );
 
-        await transcript.send(
-          `📁 **Ticket salvo**\n👤 ${dono.user.username}\n📅 ${data}\n\n${texto}`
-        );
+      delete estadoTelefones[tel];
 
-        ticketsAbertos.delete(donoId);
+      await atualizarPainel();
+      await enviarRelatorio('⚠️ Forçado', `${dono.nome} removido de ${tel}`);
 
-        await interaction.channel.delete();
-      }
+      return responderTemp(interaction, '⚠️ Desconectado com sucesso');
+    }
+
+    /* ====== TICKET ===== */
+
+    if (interaction.isButton() && interaction.customId === 'ticket_fechar') {
+      await interaction.channel.permissionOverwrites.edit(
+        interaction.channel.topic,
+        { SendMessages: false }
+      );
+    }
+
+    if (interaction.isButton() && interaction.customId === 'ticket_abrir') {
+      await interaction.channel.permissionOverwrites.edit(
+        interaction.channel.topic,
+        { SendMessages: true }
+      );
     }
 
   } catch (err) {
-    console.error('❌ ERRO INTERAÇÃO:', err);
+    console.error('ERRO:', err);
   }
 });
 
-/* ================= LOGIN ================= */
+/* ================= READY ================= */
+
+client.once('ready', async () => {
+  console.log('✅ Bot online');
+  await atualizarPainel();
+});
 
 client.login(TOKEN);
 
-/* ================= HTTP ================= */
-
 http.createServer((_, res) => {
-  res.writeHead(200);
-  res.end('Bot rodando');
+  res.end('OK');
 }).listen(PORT);
