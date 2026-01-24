@@ -5,8 +5,6 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  StringSelectMenuBuilder,
-  UserSelectMenuBuilder,
   ChannelType,
   PermissionsBitField
 } = require('discord.js');
@@ -20,7 +18,6 @@ const PORT = process.env.PORT || 10000;
 const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_ABRIR_TICKET_ID = '1463407852583653479';
 const CATEGORIA_TICKET_ID = '1463703325034676334';
-const CANAL_RELATORIO_ID = '1458342162981716039';
 const CANAL_TRANSCRIPT_ID = '1463408206129664128';
 
 const CARGO_TELEFONISTA_ID = '1463421663101059154';
@@ -36,12 +33,9 @@ const client = new Client({
 
 const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
 const estadoTelefones = {};
-const atendimentosAtivos = new Map();
-const telefoneSelecionado = new Map();
-
 let mensagemPainelId = null;
 
-/* ================= FUNÇÃO DO PAINEL (FIX) ================= */
+/* ================= FUNÇÃO PAINEL ================= */
 
 async function atualizarPainel() {
   const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID);
@@ -62,16 +56,15 @@ async function atualizarPainel() {
   );
 
   const rows = [];
-  for (let i = 0; i < botoes.length; i += 5) {
+  for (let i = 0; i < botoes.length; i += 5)
     rows.push(new ActionRowBuilder().addComponents(botoes.slice(i, i + 5)));
-  }
 
   rows.push(
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('sair_todos').setLabel('🔴 Desconectar TODOS').setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId('menu_sair').setLabel('🟠 Desconectar UM').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('menu_transferir').setLabel('🔵 Transferir').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('menu_forcar').setLabel('⚠️ Forçar Desconexão').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId('menu_forcar').setLabel('⚠️ Forçar').setStyle(ButtonStyle.Secondary)
     )
   );
 
@@ -88,18 +81,6 @@ async function atualizarPainel() {
 
   const msg = await canal.send({ content: texto, components: rows });
   mensagemPainelId = msg.id;
-}
-
-/* ================= RELATÓRIO ================= */
-
-let mensagemRelatorioId = null;
-const logsRelatorio = [];
-
-function horarioBrasilia() {
-  return new Date().toLocaleString('pt-BR', {
-    timeZone: 'America/Sao_Paulo',
-    hour12: false
-  });
 }
 
 /* ================= TICKETS ================= */
@@ -144,11 +125,26 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
   try {
 
+    /* ===== PAINEL ===== */
+
+    if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
+      await interaction.deferReply({ ephemeral: true });
+
+      const tel = interaction.customId.replace('entrar_', '');
+
+      estadoTelefones[tel] = { nome: interaction.user.username };
+
+      await atualizarPainel();
+
+      return interaction.editReply(`📞 Conectado ao ${tel}`);
+    }
+
     /* ===== ABRIR TICKET ===== */
 
     if (interaction.isButton() && interaction.customId === 'abrir_ticket') {
 
-      if (ticketsAbertos.has(interaction.user.id)) return;
+      if (ticketsAbertos.has(interaction.user.id))
+        return interaction.reply({ content: '⚠️ Você já possui ticket.', ephemeral: true });
 
       const canal = await interaction.guild.channels.create({
         name: `ticket-${interaction.user.username}-aberto`,
@@ -164,6 +160,8 @@ client.on('interactionCreate', async interaction => {
       ticketsAbertos.set(interaction.user.id, canal.id);
 
       await canal.send({ content: '🎫 Ticket iniciado.', components: [botoesTicket()] });
+
+      return interaction.reply({ content: `✅ Ticket criado: ${canal}`, ephemeral: true });
     }
 
     /* ===== BOTÕES DO TICKET ===== */
@@ -172,34 +170,34 @@ client.on('interactionCreate', async interaction => {
 
       const isStaff = interaction.member.roles.cache.has(CARGO_STAFF_ID);
 
+      const donoId = [...ticketsAbertos.entries()].find(e => e[1] === interaction.channel.id)?.[0];
+
       // FECHAR
       if (interaction.customId === 'ticket_fechar') {
+        await interaction.deferReply({ ephemeral: true });
 
         await interaction.channel.setName(interaction.channel.name.replace('-aberto', '-fechado'));
 
-        const dono = [...ticketsAbertos.entries()].find(e => e[1] === interaction.channel.id)?.[0];
+        await interaction.channel.permissionOverwrites.edit(donoId, { SendMessages: false });
 
-        await interaction.channel.permissionOverwrites.edit(dono, { SendMessages: false });
+        return interaction.editReply('🔴 Ticket fechado.');
       }
 
       // ABRIR
       if (interaction.customId === 'ticket_abrir' && isStaff) {
-
-        const dono = [...ticketsAbertos.entries()].find(e => e[1] === interaction.channel.id)?.[0];
+        await interaction.deferReply({ ephemeral: true });
 
         await interaction.channel.setName(interaction.channel.name.replace('-fechado', '-aberto'));
 
-        await interaction.channel.permissionOverwrites.edit(dono, { SendMessages: true });
+        await interaction.channel.permissionOverwrites.edit(donoId, { SendMessages: true });
+
+        return interaction.editReply('🟢 Ticket reaberto.');
       }
 
       // EXCLUIR
       if (interaction.customId === 'ticket_excluir' && isStaff) {
-
-        ticketsAbertos.forEach((v, k) => {
-          if (v === interaction.channel.id) ticketsAbertos.delete(k);
-        });
-
-        await interaction.channel.delete();
+        ticketsAbertos.delete(donoId);
+        return interaction.channel.delete();
       }
 
       // SALVAR
@@ -208,21 +206,28 @@ client.on('interactionCreate', async interaction => {
         interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)
       ) {
 
+        await interaction.deferReply({ ephemeral: true });
+
         const msgs = await interaction.channel.messages.fetch({ limit: 100 });
+
+        const data = new Date().toLocaleString('pt-BR');
 
         const texto = msgs
           .reverse()
           .map(m => `[${m.author.username}] ${m.content}`)
           .join('\n');
 
-        const donoId = [...ticketsAbertos.entries()].find(e => e[1] === interaction.channel.id)?.[0];
         const dono = await interaction.guild.members.fetch(donoId);
 
-        await dono.send(`📋 **Resumo do Ticket**\n\n${texto}`);
+        await dono.send(
+          `📋 **Resumo do Ticket**\n\n👤 ${dono}\n📅 ${data}\n\n${texto}`
+        );
 
         const transcript = await client.channels.fetch(CANAL_TRANSCRIPT_ID);
 
-        await transcript.send(`📁 **Ticket salvo**\n\n${texto}`);
+        await transcript.send(
+          `📁 **Ticket salvo**\n\n👤 ${dono}\n📅 ${data}\n\n${texto}`
+        );
 
         ticketsAbertos.delete(donoId);
 
