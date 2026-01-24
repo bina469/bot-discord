@@ -6,7 +6,6 @@ const {
   ButtonBuilder,
   ButtonStyle,
   StringSelectMenuBuilder,
-  UserSelectMenuBuilder,
   ChannelType,
   PermissionsBitField
 } = require('discord.js');
@@ -34,16 +33,14 @@ const client = new Client({
 /* ================= HELPERS ================= */
 
 async function responderTemp(interaction, texto, tempo = 5000) {
-  let msg;
-
-  if (!interaction.replied && !interaction.deferred) {
-    msg = await interaction.reply({ content: texto, ephemeral: true });
-  } else {
-    msg = await interaction.followUp({ content: texto, ephemeral: true });
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ ephemeral: true });
   }
 
+  const msg = await interaction.editReply({ content: texto });
+
   setTimeout(() => {
-    msg.delete().catch(() => {});
+    interaction.deleteReply().catch(() => {});
   }, tempo);
 }
 
@@ -52,7 +49,6 @@ async function responderTemp(interaction, texto, tempo = 5000) {
 const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
 const estadoTelefones = {};
 const atendimentosAtivos = new Map();
-const telefoneSelecionado = new Map();
 
 let mensagemPainelId = null;
 
@@ -120,7 +116,7 @@ async function enviarRelatorio(acao, detalhes) {
 
   logsRelatorio.push(`[${horarioBrasilia()}] ${acao} — ${detalhes}`);
 
-  const texto = `📋 **RELATÓRIO DO PAINEL**\n\n${logsRelatorio.join('\n')}`;
+  const texto = `📋 **RELATÓRIO DO PAINEL**\n\n${logsRelatorio.slice(-25).join('\n')}`;
 
   if (mensagemRelatorioId) {
     try {
@@ -135,47 +131,12 @@ async function enviarRelatorio(acao, detalhes) {
   mensagemRelatorioId = msg.id;
 }
 
-/* ================= TICKETS ================= */
-
-const ticketsAbertos = new Map();
-
-function botoesTicket() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('ticket_abrir').setLabel('🟢 Abrir').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('ticket_fechar').setLabel('🔴 Fechar').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('ticket_salvar').setLabel('💾 Salvar').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('ticket_excluir').setLabel('🗑️ Excluir').setStyle(ButtonStyle.Danger)
-  );
-}
-
-/* ================= READY ================= */
-
-client.once('ready', async () => {
-  console.log('✅ Bot online');
-
-  await atualizarPainel();
-
-  const canalTicket = await client.channels.fetch(CANAL_ABRIR_TICKET_ID);
-
-  await canalTicket.send({
-    content: '🎫 **ATENDIMENTO**',
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('abrir_ticket')
-          .setLabel('📂 Iniciar Atendimento')
-          .setStyle(ButtonStyle.Primary)
-      )
-    ]
-  });
-});
-
 /* ================= INTERAÇÕES ================= */
 
 client.on('interactionCreate', async interaction => {
   try {
 
-    /* ========= PAINEL ========= */
+    /* ========= CONECTAR ========= */
 
     if (interaction.isButton() && interaction.customId.startsWith('entrar_')) {
       const tel = interaction.customId.replace('entrar_', '');
@@ -188,20 +149,66 @@ client.on('interactionCreate', async interaction => {
         nome: interaction.user.username
       };
 
-      atendimentosAtivos.set(interaction.user.id, [
-        ...(atendimentosAtivos.get(interaction.user.id) || []),
-        tel
-      ]);
-
       await atualizarPainel();
       await enviarRelatorio('📞 Conexão', `${interaction.user.username} → ${tel}`);
 
       return responderTemp(interaction, `📞 Conectado ao **${tel}**`);
     }
 
+    /* ========= DESCONECTAR TODOS ========= */
+
+    if (interaction.isButton() && interaction.customId === 'sair_todos') {
+      for (const tel in estadoTelefones) delete estadoTelefones[tel];
+
+      await atualizarPainel();
+      await enviarRelatorio('🔴 Forçado geral', interaction.user.username);
+
+      return responderTemp(interaction, '🔴 Todos desconectados.');
+    }
+
+    /* ========= MENU UM ========= */
+
+    if (interaction.isButton() && interaction.customId === 'menu_sair') {
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId('select_sair')
+        .setPlaceholder('Escolha o telefone')
+        .addOptions(
+          telefones
+            .filter(t => estadoTelefones[t])
+            .map(t => ({
+              label: t,
+              value: t
+            }))
+        );
+
+      await interaction.reply({
+        components: [new ActionRowBuilder().addComponents(menu)],
+        ephemeral: true
+      });
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId === 'select_sair') {
+      const tel = interaction.values[0];
+      const user = estadoTelefones[tel];
+
+      delete estadoTelefones[tel];
+
+      await atualizarPainel();
+      await enviarRelatorio('🟠 Desconectado', `${user.nome} ← ${tel}`);
+
+      await interaction.update({ components: [] });
+    }
+
   } catch (err) {
     console.error('❌ ERRO INTERAÇÃO:', err);
   }
+});
+
+/* ================= READY ================= */
+
+client.once('ready', async () => {
+  console.log('✅ Bot online');
+  await atualizarPainel();
 });
 
 /* ================= LOGIN ================= */
