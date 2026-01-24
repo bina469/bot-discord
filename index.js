@@ -1,3 +1,13 @@
+/**
+ * index.js — Bot Discord (Render) — Painel de Presença + Tickets
+ * - Painel de Presença SEM limitação de cargo (qualquer um pode usar, inclusive "Forçar")
+ * - Tickets com limitação (somente STAFF pode reabrir/salvar/excluir)
+ * - Painéis não duplicam (upsert -> edita mensagem existente)
+ * - Menus de: Desconectar UM, Transferir (telefone -> membro), Forçar (telefone)
+ * - Notificações do painel (ephemeral) tentam sumir após alguns segundos
+ * - Logs render-safe (não derruba o processo)
+ */
+
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
@@ -11,19 +21,19 @@ const {
   ButtonStyle,
   ChannelType,
   PermissionsBitField,
+  StringSelectMenuBuilder,
+  UserSelectMenuBuilder,
 } = require('discord.js');
 
 /* ================= CONFIG ================= */
 const TOKEN = process.env.TOKEN;
 const PORT = process.env.PORT || 10000;
 
-// IDs (os seus)
 const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_ABRIR_TICKET_ID = '1463407852583653479';
 const CATEGORIA_TICKET_ID = '1463703325034676334';
 const CANAL_TRANSCRIPT_ID = '1463408206129664128';
 
-const CARGO_TELEFONISTA_ID = '1463421663101059154';
 const CARGO_STAFF_ID = '838753379332915280';
 
 /* ================= LOGS (Render-safe) ================= */
@@ -33,7 +43,6 @@ try {
 } catch (e) {
   console.error('❌ Não foi possível criar pasta logs:', e);
 }
-
 function logPainel(msg) {
   const logPath = path.join(logsDir, 'painel.log');
   try {
@@ -55,31 +64,49 @@ const client = new Client({
 });
 
 /* ================= ESTADO ================= */
-// Painel de presença
+// Presença
 const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
 const estadoTelefones = Object.fromEntries(telefones.map(t => [t, 'Livre']));
 let presencaPanelMsgId = null;
 
-// Tickets (persistente via topic)
+// Tickets
 const ticketsAbertos = new Map(); // userId -> channelId
 
+// Fluxos de menu (desconectar_um, transferir, forcar)
+const fluxoPresenca = new Map(); // userId -> { action, step, telefone? }
+
 /* ================= HELPERS ================= */
+function isStaff(member) {
+  return !!member?.roles?.cache?.has(CARGO_STAFF_ID);
+}
+
 async function responder(interaction, payload) {
   try {
-    const data = { ...payload, flags: 64 }; // ephemeral sem warning
+    const data = { ...payload, flags: 64 }; // ephemeral
     if (interaction.replied || interaction.deferred) return await interaction.followUp(data);
     return await interaction.reply(data);
   } catch {}
 }
 
-function isStaffOrTelefonista(member) {
-  if (!member?.roles?.cache) return false;
-  return member.roles.cache.has(CARGO_STAFF_ID) || member.roles.cache.has(CARGO_TELEFONISTA_ID);
-}
+// Ephemeral que tenta sumir depois de X ms
+async function responderTemp(interaction, payload, ms = 7000) {
+  try {
+    const data = { ...payload, flags: 64 }; // ephemeral
+    let sent;
+    if (interaction.replied || interaction.deferred) sent = await interaction.followUp(data);
+    else sent = await interaction.reply(data);
 
-function isStaff(member) {
-  if (!member?.roles?.cache) return false;
-  return member.roles.cache.has(CARGO_STAFF_ID);
+    setTimeout(async () => {
+      try {
+        await interaction.deleteReply().catch(() => {});
+      } catch {}
+      try {
+        if (sent?.deletable) await sent.delete().catch(() => {});
+      } catch {}
+    }, ms);
+
+    return sent;
+  } catch {}
 }
 
 /* ================= UI BUILDERS ================= */
@@ -89,14 +116,17 @@ function rowTicket() {
       .setCustomId('ticket_salvar')
       .setLabel('💾 Salvar')
       .setStyle(ButtonStyle.Primary),
+
     new ButtonBuilder()
       .setCustomId('ticket_fechar')
       .setLabel('🔒 Fechar')
       .setStyle(ButtonStyle.Secondary),
+
     new ButtonBuilder()
       .setCustomId('ticket_abrir')
       .setLabel('🔓 Abrir')
       .setStyle(ButtonStyle.Success),
+
     new ButtonBuilder()
       .setCustomId('ticket_excluir')
       .setLabel('🗑 Excluir')
@@ -107,9 +137,10 @@ function rowTicket() {
 function buildPainelPresencaPayload() {
   const linhas = telefones.map(t => {
     const st = estadoTelefones[t] || 'Livre';
-    const bolinha = (st.toLowerCase().includes('bina') || st.toLowerCase().includes('ocup'))
-      ? '🔴'
-      : '🟢';
+    const bolinha =
+      (st.toLowerCase().includes('bina') || st.toLowerCase().includes('ocup') || st.includes('<@'))
+        ? '🔴'
+        : '🟢';
     return `${bolinha} ${t} — ${st}`;
   }).join('\n');
 
@@ -127,14 +158,17 @@ function buildPainelPresencaPayload() {
       .setCustomId('presenca_desconectar_todos')
       .setLabel('🔴 Desconectar TODOS')
       .setStyle(ButtonStyle.Danger),
+
     new ButtonBuilder()
       .setCustomId('presenca_desconectar_um')
       .setLabel('🟠 Desconectar UM')
       .setStyle(ButtonStyle.Secondary),
+
     new ButtonBuilder()
       .setCustomId('presenca_transferir')
       .setLabel('🔵 Transferir')
       .setStyle(ButtonStyle.Primary),
+
     new ButtonBuilder()
       .setCustomId('presenca_forcar')
       .setLabel('⚠️ Forçar')
@@ -145,6 +179,38 @@ function buildPainelPresencaPayload() {
     content: `📞 **PAINEL DE PRESENÇA**\n\n${linhas}`,
     components: [rowTelefones, rowAcoes],
   };
+}
+
+function menuTelefones(customId, { apenasOcupados = false, placeholder = 'Selecione um telefone' } = {}) {
+  const options = telefones
+    .filter(t => !apenasOcupados || ((estadoTelefones[t] || 'Livre') !== 'Livre'))
+    .map(t => ({
+      label: t,
+      value: t,
+      description: `Status: ${estadoTelefones[t] || 'Livre'}`.slice(0, 100),
+    }));
+
+  // Se não houver opções, cria uma "fake" pra não quebrar o menu
+  const safeOptions = options.length ? options : [{ label: 'Nenhum disponível', value: '__none__', description: 'Não há telefones para selecionar.' }];
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .addOptions(safeOptions)
+      .setMinValues(1)
+      .setMaxValues(1)
+  );
+}
+
+function menuUsuario(customId, placeholder = 'Selecione o membro') {
+  return new ActionRowBuilder().addComponents(
+    new UserSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .setMinValues(1)
+      .setMaxValues(1)
+  );
 }
 
 /* ================= UPSERT PAINÉIS ================= */
@@ -178,7 +244,6 @@ async function upsertPainelPresenca() {
   const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID).catch(() => null);
   if (!canal || !canal.isTextBased()) return;
 
-  // Se já temos o ID salvo, tenta editar direto
   if (presencaPanelMsgId) {
     const msg = await canal.messages.fetch(presencaPanelMsgId).catch(() => null);
     if (msg) {
@@ -187,7 +252,6 @@ async function upsertPainelPresenca() {
     }
   }
 
-  // Se não tem ID (ou sumiu), procura
   const msgs = await canal.messages.fetch({ limit: 25 }).catch(() => null);
   const existente = msgs?.find(m =>
     m.author?.id === client.user.id &&
@@ -212,7 +276,6 @@ async function reconstruirTickets() {
 
   for (const [, ch] of categoria.children.cache) {
     if (ch.type !== ChannelType.GuildText) continue;
-
     const topic = ch.topic || '';
     const match = topic.match(/ticket-owner:(\d+)/);
     if (match) ticketsAbertos.set(match[1], ch.id);
@@ -226,8 +289,6 @@ client.once('clientReady', async () => {
   console.log('✅ Bot online');
 
   await reconstruirTickets();
-
-  // Sobe/atualiza painéis sem duplicar
   await upsertPainelTicket();
   await upsertPainelPresenca();
 });
@@ -235,62 +296,152 @@ client.once('clientReady', async () => {
 /* ================= INTERAÇÕES ================= */
 client.on('interactionCreate', async (interaction) => {
   try {
-    /* ================= PAINEL DE PRESENÇA ================= */
+    /* ================= PAINEL DE PRESENÇA (BOTÕES) ================= */
     if (interaction.isButton() && interaction.customId.startsWith('presenca_')) {
-      // confirma rápido a interação pra não dar "falhou"
+      // Importantíssimo: responde rápido pra não falhar
       await interaction.deferUpdate().catch(() => {});
 
-      if (!isStaffOrTelefonista(interaction.member)) {
-        // responde via followUp ephemeral, já que deferUpdate foi feito
-        return responder(interaction, { content: '🚫 Apenas staff/telefonista pode usar o painel de presença.' });
-      }
-
-      // Botões de telefone: toggle Livre <-> binabot (teste estável)
+      // Clique em telefone: toggle Livre <-> binabot (você pode trocar pela lógica real depois)
       if (interaction.customId.startsWith('presenca_tel_')) {
-        const telefone = interaction.customId.replace('presenca_tel_', '');
-        if (estadoTelefones[telefone] == null) {
-          return responder(interaction, { content: '⚠️ Telefone inválido.' });
+        const tel = interaction.customId.replace('presenca_tel_', '');
+        if (estadoTelefones[tel] == null) {
+          await responderTemp(interaction, { content: '⚠️ Telefone inválido.' }, 5000);
+        } else {
+          estadoTelefones[tel] = (estadoTelefones[tel] === 'Livre') ? 'binabot' : 'Livre';
+          logPainel(`Presença: ${tel} -> ${estadoTelefones[tel]} (por ${interaction.user.tag})`);
         }
 
-        estadoTelefones[telefone] = (estadoTelefones[telefone] === 'Livre') ? 'binabot' : 'Livre';
-        logPainel(`Presença: ${telefone} -> ${estadoTelefones[telefone]} (por ${interaction.user.tag})`);
+        await interaction.message.edit(buildPainelPresencaPayload()).catch(() => upsertPainelPresenca());
+        return;
       }
 
+      // Desconectar TODOS
       if (interaction.customId === 'presenca_desconectar_todos') {
         for (const t of telefones) estadoTelefones[t] = 'Livre';
         logPainel(`Desconectar TODOS (por ${interaction.user.tag})`);
+
+        await interaction.message.edit(buildPainelPresencaPayload()).catch(() => upsertPainelPresenca());
+        await responderTemp(interaction, { content: '🔴 Desconectado de todos.' }, 6000);
+        return;
       }
 
+      // Desconectar UM (abre menu)
       if (interaction.customId === 'presenca_desconectar_um') {
-        // aqui você implementa sua regra real depois
-        logPainel(`Desconectar UM (por ${interaction.user.tag})`);
-        await responder(interaction, { content: '🟠 Ação "Desconectar UM" está em modo teste. Diga a regra real que eu implemento.' });
+        fluxoPresenca.set(interaction.user.id, { action: 'desconectar_um', step: 'telefone' });
+
+        await responderTemp(interaction, {
+          content: '🟠 Selecione o telefone que deseja **desconectar**:',
+          components: [menuTelefones('presenca_desconectar_um_select', { apenasOcupados: true, placeholder: 'Telefone para desconectar' })],
+        }, 12000);
+
+        return;
       }
 
+      // Transferir (menu telefone -> menu usuário)
       if (interaction.customId === 'presenca_transferir') {
-        logPainel(`Transferir (por ${interaction.user.tag})`);
-        await responder(interaction, { content: '🔵 Ação "Transferir" está em modo teste. Diga a regra real que eu implemento.' });
+        fluxoPresenca.set(interaction.user.id, { action: 'transferir', step: 'telefone_origem' });
+
+        await responderTemp(interaction, {
+          content: '🔵 Selecione o **telefone de origem** para transferir:',
+          components: [menuTelefones('presenca_transferir_tel_select', { apenasOcupados: true, placeholder: 'Telefone de origem' })],
+        }, 12000);
+
+        return;
       }
 
+      // Forçar (abre menu telefone)
       if (interaction.customId === 'presenca_forcar') {
-        logPainel(`Forçar (por ${interaction.user.tag})`);
-        await responder(interaction, { content: '⚠️ Ação "Forçar" está em modo teste. Diga a regra real que eu implemento.' });
-      }
+        fluxoPresenca.set(interaction.user.id, { action: 'forcar', step: 'telefone' });
 
-      // ✅ atualiza editando a própria mensagem (não duplica)
-      await interaction.message.edit(buildPainelPresencaPayload()).catch(async () => {
-        // fallback (se a msg não for editável)
-        await upsertPainelPresenca();
-      });
+        await responderTemp(interaction, {
+          content: '⚠️ Selecione o telefone para **forçar desconexão**:',
+          components: [menuTelefones('presenca_forcar_select', { apenasOcupados: true, placeholder: 'Telefone para forçar' })],
+        }, 12000);
+
+        return;
+      }
 
       return;
     }
 
-    /* ================= ABRIR TICKET ================= */
+    /* ================= PAINEL DE PRESENÇA (MENUS) ================= */
+    // Desconectar UM: seleciona telefone
+    if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_desconectar_um_select') {
+      await interaction.deferUpdate().catch(() => {});
+      const tel = interaction.values?.[0];
+      if (!tel || tel === '__none__') {
+        return responderTemp(interaction, { content: '⚠️ Nenhum telefone disponível.' }, 6000);
+      }
+
+      estadoTelefones[tel] = 'Livre';
+      logPainel(`Desconectar UM: ${tel} (por ${interaction.user.tag})`);
+
+      await upsertPainelPresenca();
+      fluxoPresenca.delete(interaction.user.id);
+
+      return responderTemp(interaction, { content: `✅ ${tel} desconectado.` }, 6000);
+    }
+
+    // Transferir: seleciona telefone origem
+    if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_transferir_tel_select') {
+      await interaction.deferUpdate().catch(() => {});
+      const tel = interaction.values?.[0];
+      if (!tel || tel === '__none__') {
+        return responderTemp(interaction, { content: '⚠️ Nenhum telefone disponível.' }, 6000);
+      }
+
+      fluxoPresenca.set(interaction.user.id, { action: 'transferir', step: 'usuario', telefone: tel });
+
+      return responderTemp(interaction, {
+        content: `🔵 Agora selecione o **membro** para transferir o atendimento do telefone **${tel}**:`,
+        components: [menuUsuario('presenca_transferir_user_select', 'Membro destino')],
+      }, 12000);
+    }
+
+    // Transferir: seleciona usuário destino
+    if (interaction.isUserSelectMenu() && interaction.customId === 'presenca_transferir_user_select') {
+      await interaction.deferUpdate().catch(() => {});
+
+      const fluxo = fluxoPresenca.get(interaction.user.id);
+      if (!fluxo || fluxo.action !== 'transferir' || !fluxo.telefone) {
+        return responderTemp(interaction, { content: '⚠️ Fluxo expirou. Clique em Transferir novamente.' }, 7000);
+      }
+
+      const userId = interaction.values?.[0];
+      if (!userId) return;
+
+      const tel = fluxo.telefone;
+      estadoTelefones[tel] = `<@${userId}>`; // mostra no painel quem está com o telefone
+
+      logPainel(`Transferir: ${tel} -> ${userId} (por ${interaction.user.tag})`);
+
+      await upsertPainelPresenca();
+      fluxoPresenca.delete(interaction.user.id);
+
+      return responderTemp(interaction, { content: `✅ Transferido: **${tel}** agora está com <@${userId}>.` }, 7000);
+    }
+
+    // Forçar: seleciona telefone e desconecta
+    if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_forcar_select') {
+      await interaction.deferUpdate().catch(() => {});
+      const tel = interaction.values?.[0];
+      if (!tel || tel === '__none__') {
+        return responderTemp(interaction, { content: '⚠️ Nenhum telefone disponível.' }, 6000);
+      }
+
+      estadoTelefones[tel] = 'Livre';
+      logPainel(`Forçar: ${tel} (por ${interaction.user.tag})`);
+
+      await upsertPainelPresenca();
+      fluxoPresenca.delete(interaction.user.id);
+
+      return responderTemp(interaction, { content: `⚠️ Forçado: **${tel}** desconectado.` }, 7000);
+    }
+
+    /* ================= TICKETS ================= */
     if (interaction.isButton() && interaction.customId === 'abrir_ticket') {
       const userId = interaction.user.id;
 
-      // se tiver ticket no Map, valida se canal existe; senão limpa
       const canalIdExistente = ticketsAbertos.get(userId);
       if (canalIdExistente) {
         const ch = interaction.guild.channels.cache.get(canalIdExistente);
@@ -321,7 +472,7 @@ client.on('interactionCreate', async (interaction) => {
       return responder(interaction, { content: `✅ Ticket criado: ${canal}` });
     }
 
-    /* ================= FECHAR TICKET ================= */
+    // Fechar ticket (pode ser por qualquer um, se quiser limitar, coloque isStaff aqui)
     if (interaction.isButton() && interaction.customId === 'ticket_fechar') {
       const topic = interaction.channel.topic || '';
       const match = topic.match(/ticket-owner:(\d+)/);
@@ -338,10 +489,9 @@ client.on('interactionCreate', async (interaction) => {
       return responder(interaction, { content: '🔒 Ticket fechado.' });
     }
 
-    /* ================= REABRIR TICKET ================= */
+    // Reabrir ticket (somente staff)
     if (interaction.isButton() && interaction.customId === 'ticket_abrir') {
-      if (!isStaff(interaction.member))
-        return responder(interaction, { content: '🚫 Apenas staff.' });
+      if (!isStaff(interaction.member)) return responder(interaction, { content: '🚫 Apenas staff.' });
 
       const topic = interaction.channel.topic || '';
       const match = topic.match(/ticket-owner:(\d+)/);
@@ -359,10 +509,9 @@ client.on('interactionCreate', async (interaction) => {
       return responder(interaction, { content: '🔓 Ticket reaberto.' });
     }
 
-    /* ================= SALVAR TRANSCRIPT ================= */
+    // Salvar transcript (somente staff)
     if (interaction.isButton() && interaction.customId === 'ticket_salvar') {
-      if (!isStaff(interaction.member))
-        return responder(interaction, { content: '🚫 Apenas staff.' });
+      if (!isStaff(interaction.member)) return responder(interaction, { content: '🚫 Apenas staff.' });
 
       const msgs = await interaction.channel.messages.fetch({ limit: 100 }).catch(() => null);
       if (!msgs) return responder(interaction, { content: '⚠️ Não consegui buscar mensagens.' });
@@ -387,10 +536,9 @@ client.on('interactionCreate', async (interaction) => {
       return responder(interaction, { content: '💾 Transcript salvo.' });
     }
 
-    /* ================= EXCLUIR TICKET ================= */
+    // Excluir ticket (somente staff)
     if (interaction.isButton() && interaction.customId === 'ticket_excluir') {
-      if (!isStaff(interaction.member))
-        return responder(interaction, { content: '🚫 Apenas staff.' });
+      if (!isStaff(interaction.member)) return responder(interaction, { content: '🚫 Apenas staff.' });
 
       const topic = interaction.channel.topic || '';
       const match = topic.match(/ticket-owner:(\d+)/);
@@ -403,6 +551,7 @@ client.on('interactionCreate', async (interaction) => {
       setTimeout(() => {
         interaction.channel.delete().catch(() => {});
       }, 3000);
+
       return;
     }
 
