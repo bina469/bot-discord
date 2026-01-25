@@ -405,75 +405,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    /* ================= MENUS PRESENÇA ================= */
-    if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_desconectar_um_select') {
-      await interaction.deferUpdate().catch(() => {});
-      if (!fluxoPresenca.has(interaction.user.id)) return avisarEphemeralAutoDelete(interaction, '⚠️ Este menu expirou.', 2500);
-
-      const tel = interaction.values?.[0];
-      if (!tel || tel === '__none__') return avisarEphemeralAutoDelete(interaction, '⚠️ Nenhum telefone disponível.', 2500);
-
-      estadoTelefones[tel] = 'Livre';
-      await upsertPainelPresenca();
-      fluxoPresenca.delete(interaction.user.id);
-
-      interaction.message.delete().catch(() => {});
-      await avisarEphemeralAutoDelete(interaction, `✅ ${tel} desconectado.`, 3000);
-      return;
-    }
-
-    if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_transferir_tel_select') {
-      await interaction.deferUpdate().catch(() => {});
-      if (!fluxoPresenca.has(interaction.user.id)) return avisarEphemeralAutoDelete(interaction, '⚠️ Este menu expirou.', 2500);
-
-      const tel = interaction.values?.[0];
-      if (!tel || tel === '__none__') return avisarEphemeralAutoDelete(interaction, '⚠️ Nenhum telefone disponível.', 2500);
-
-      fluxoPresenca.set(interaction.user.id, { action: 'transferir', step: 'usuario', telefone: tel });
-      interaction.message.delete().catch(() => {});
-
-      await enviarMsgTempNoCanal(interaction.channel, {
-        content: `🔵 <@${interaction.user.id}>, selecione o **membro** para receber o telefone **${tel}**:`,
-        components: [menuUsuario('presenca_transferir_user_select', 'Membro destino')],
-      }, 20000);
-
-      return;
-    }
-
-    if (interaction.isUserSelectMenu() && interaction.customId === 'presenca_transferir_user_select') {
-      await interaction.deferUpdate().catch(() => {});
-      const fluxo = fluxoPresenca.get(interaction.user.id);
-      if (!fluxo || fluxo.action !== 'transferir' || !fluxo.telefone) return avisarEphemeralAutoDelete(interaction, '⚠️ Fluxo expirou. Clique em Transferir novamente.', 3000);
-
-      const userId = interaction.values?.[0];
-      if (!userId) return;
-
-      const tel = fluxo.telefone;
-      estadoTelefones[tel] = `<@${userId}>`;
-      await upsertPainelPresenca();
-      fluxoPresenca.delete(interaction.user.id);
-
-      interaction.message.delete().catch(() => {});
-      await avisarEphemeralAutoDelete(interaction, `✅ Transferido: **${tel}** agora está com <@${userId}>.`, 3500);
-      return;
-    }
-
-    if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_forcar_select') {
-      await interaction.deferUpdate().catch(() => {});
-      if (!fluxoPresenca.has(interaction.user.id)) return avisarEphemeralAutoDelete(interaction, '⚠️ Este menu expirou.', 2500);
-
-      const tel = interaction.values?.[0];
-      if (!tel || tel === '__none__') return avisarEphemeralAutoDelete(interaction, '⚠️ Nenhum telefone disponível.', 2500);
-
-      estadoTelefones[tel] = 'Livre';
-      await upsertPainelPresenca();
-      fluxoPresenca.delete(interaction.user.id);
-
-      interaction.message.delete().catch(() => {});
-      await avisarEphemeralAutoDelete(interaction, `⚠️ Forçado: **${tel}** desconectado.`, 3500);
-      return;
-    }
-
     /* ================= TICKETS ================= */
 
     // Abrir ticket (criar)
@@ -514,7 +445,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // Fechar (dono OU staff) — volta de edição para fechado também
+    // Fechar (dono OU staff) — sempre vai pra -fechado
     if (interaction.isButton() && interaction.customId === 'ticket_fechar') {
       await ackUpdate(interaction);
 
@@ -527,8 +458,20 @@ client.on('interactionCreate', async (interaction) => {
 
         const statusAtual = getTicketStatusFromName(interaction.channel.name);
 
+        // aqui mantém o comportamento original: dono não fala quando fechado
         await interaction.channel.permissionOverwrites.edit(donoId, { SendMessages: false });
-        await interaction.channel.setName(setTicketName(interaction.channel.name, 'fechado'));
+
+        // renomeia com retry+verify
+        const alvo = setTicketName(interaction.channel.name, 'fechado');
+        let ok = false;
+        for (let i = 0; i < 3; i++) {
+          await interaction.channel.setName(alvo);
+          await sleep(700);
+          const fresh = await interaction.guild.channels.fetch(interaction.channel.id);
+          if ((fresh.name || '').toLowerCase().endsWith('-fechado')) { ok = true; break; }
+        }
+
+        if (!ok) return avisarEphemeralAutoDelete(interaction, '⚠️ Não consegui renomear para -fechado. Tente novamente.', 6000);
 
         const msg = (statusAtual === 'edicao')
           ? '🔒 Edição finalizada. Ticket fechado.'
@@ -543,7 +486,8 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // Editar (somente staff) — fechado -> edicao (ROBUSTO: fetch real + retry + verify)
+    // Editar (somente staff) — fechado -> edicao
+    // ✅ MUDANÇA IMPORTANTE: aqui NÃO muda permissão (só renomeia) pra evitar rate limit/bloqueio
     if (interaction.isButton() && interaction.customId === 'ticket_editar') {
       await ackUpdate(interaction);
 
@@ -552,10 +496,6 @@ client.on('interactionCreate', async (interaction) => {
           return avisarEphemeralAutoDelete(interaction, '🚫 Apenas admin/staff pode EDITAR.', 4500);
         }
 
-        const donoId = getTicketOwnerIdFromChannel(interaction.channel);
-        if (!donoId) return avisarEphemeralAutoDelete(interaction, '⚠️ Não encontrei o dono do ticket.', 3500);
-
-        // Busca o canal real (não confiar só no cache)
         const ch = await interaction.guild.channels.fetch(interaction.channel.id);
         const status = getTicketStatusFromName(ch.name);
 
@@ -565,20 +505,15 @@ client.on('interactionCreate', async (interaction) => {
 
         const alvo = setTicketName(ch.name, 'edicao');
 
-        // libera dono
-        await ch.permissionOverwrites.edit(donoId, { SendMessages: true });
-
-        // rename com retry + verify
         let ok = false;
         let lastErr = null;
 
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 4; i++) {
           try {
             await ch.setName(alvo);
           } catch (e) {
             lastErr = e;
           }
-
           await sleep(900);
           const fresh = await interaction.guild.channels.fetch(ch.id);
           if ((fresh.name || '').toLowerCase().endsWith('-edicao')) {
@@ -588,21 +523,12 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (!ok) {
-          console.error('❌ Falha ao renomear para edição:', {
-            atual: ch.name,
-            alvo: alvo,
-            erro: lastErr?.message || lastErr,
-          });
-
-          return avisarEphemeralAutoDelete(
-            interaction,
-            '⚠️ Não consegui mudar o ticket para **-edicao**. Tente novamente.',
-            7000
-          );
+          console.error('❌ Falha ao renomear para -edicao:', lastErr?.message || lastErr);
+          return avisarEphemeralAutoDelete(interaction, '⚠️ Não consegui mudar para EDIÇÃO (-edicao). Aguarde 1 minuto e tente novamente.', 8000);
         }
 
         logPainel(`Ticket em edição: ${alvo} (por ${interaction.user.tag})`);
-        await avisarEphemeralAutoDelete(interaction, '✏️ Ticket em EDIÇÃO (status -edicao aplicado).', 5000);
+        await avisarEphemeralAutoDelete(interaction, '✏️ Ticket em EDIÇÃO (nome alterado para -edicao).', 5000);
         return;
 
       } catch (err) {
