@@ -23,7 +23,7 @@ const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_ABRIR_TICKET_ID = '1463407852583653479';
 const CATEGORIA_TICKET_ID = '1463703325034676334';
 
-const CANAL_RELATORIO_ID = '1458342162981716039';   // relatório diário da presença (1 msg/dia)
+const CANAL_RELATORIO_ID = '1458342162981716039';   // relatório diário da presença
 const CANAL_TRANSCRIPT_ID = '1463408206129664128';  // salvar ticket só aqui
 
 const CARGO_STAFF_ID = '838753379332915280';
@@ -50,10 +50,11 @@ const client = new Client({
 const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
 const estadoTelefones = Object.fromEntries(telefones.map(t => [t, 'Livre']));
 let presencaPanelMsgId = null;
-const fluxoPresenca = new Map(); // userId -> { action, tel? }
+const fluxoPresenca = new Map();
 
 /* ================= ESTADO TICKETS ================= */
 const ticketsAbertos = new Map(); // ownerId -> channelId
+const ticketLocks = new Map();    // channelId -> boolean (lock simples)
 
 /* ================= UTIL ================= */
 function isStaff(member) {
@@ -71,7 +72,6 @@ function brTimeString(date = new Date()) {
 }
 
 function brDateKey(date = new Date()) {
-  // "25/01/2026"
   return new Intl.DateTimeFormat('pt-BR', {
     timeZone: 'America/Sao_Paulo',
     year: 'numeric', month: '2-digit', day: '2-digit',
@@ -108,35 +108,27 @@ async function appendDailyLog(line) {
     const header = `📅 **RELATÓRIO PRESENÇA — ${dateKey}**`;
     const marker = `RELATORIO_PRESENCA:${dateKey}`;
 
-    // procura mensagem do próprio bot com o marcador
     const msgs = await canal.messages.fetch({ limit: 30 }).catch(() => null);
     let target = msgs?.find(m => m.author?.id === client.user.id && (m.content || '').includes(marker));
 
     const newLine = `• ${brTimeString(new Date())} — ${line}`;
 
     if (!target) {
-      const content = `${header}\n${marker}\n\n${newLine}`;
-      await canal.send({ content });
+      await canal.send({ content: `${header}\n${marker}\n\n${newLine}` });
       return;
     }
 
-    // edita, mantendo tamanho seguro
     const current = target.content || '';
     const parts = current.split('\n');
-    // preserva as 3 primeiras linhas (header + marker + linha em branco)
     const base = parts.slice(0, 3).join('\n');
     const body = parts.slice(3).join('\n').trim();
 
     const linhas = body ? body.split('\n') : [];
     linhas.push(newLine);
 
-    // limita linhas para não estourar 2000 chars
-    while ((base + '\n' + linhas.join('\n')).length > 1800 && linhas.length > 1) {
-      linhas.shift(); // remove mais antigo
-    }
+    while ((base + '\n' + linhas.join('\n')).length > 1800 && linhas.length > 1) linhas.shift();
 
-    const updated = `${base}\n${linhas.join('\n')}`.trimEnd();
-    await target.edit({ content: updated }).catch(() => {});
+    await target.edit({ content: `${base}\n${linhas.join('\n')}`.trimEnd() }).catch(() => {});
   } catch (e) {
     logLocal(`❌ appendDailyLog error: ${e?.message || e}`);
   }
@@ -148,64 +140,91 @@ function getTicketOwnerIdFromChannel(channel) {
   const m = topic.match(/ticket-owner:(\d+)/);
   return m ? m[1] : null;
 }
-function ticketBaseName(name) {
-  return (name || '').replace(/-aberto$/i, '').replace(/-fechado$/i, '');
-}
+
 function setTicketName(name, status /* aberto|fechado */) {
-  return `${ticketBaseName(name)}-${status}`;
+  const base = (name || '').replace(/-aberto$/i, '').replace(/-fechado$/i, '');
+  return `${base}-${status}`;
 }
 function getTicketStatusFromName(name) {
   const n = (name || '').toLowerCase();
   if (n.endsWith('-fechado')) return 'fechado';
   return 'aberto';
 }
+
+// salva estado também no topic (fonte de verdade)
+async function setTicketStateOnTopic(channel, state /* aberto|fechado */) {
+  const topic = channel.topic || '';
+  const cleaned = topic.replace(/ticket-state:(aberto|fechado)/g, '').trim();
+  const newTopic = `${cleaned} ticket-state:${state}`.trim();
+  await channel.setTopic(newTopic).catch(() => {});
+}
+
+function getTicketStateFromTopic(channel) {
+  const topic = channel?.topic || '';
+  const m = topic.match(/ticket-state:(aberto|fechado)/);
+  return m ? m[1] : null;
+}
+
 async function fetchChannelSafe(guild, channelId) {
   try { return await guild.channels.fetch(channelId); }
-  catch (e) {
-    // 10003: Unknown Channel (ou sem acesso)
-    if (e?.code === 10003) return null;
-    throw e;
-  }
+  catch (e) { if (e?.code === 10003) return null; throw e; }
 }
-async function renameWithVerify(guild, channel, targetName, suffix) {
-  let lastErr = null;
-  for (let i = 0; i < 5; i++) {
-    try { await channel.setName(targetName); }
-    catch (e) { lastErr = e; }
 
-    await sleep(900);
+// rename com backoff (1s,2s,4s...) + verify + log do erro real
+async function renameWithBackoffVerify(guild, channel, targetName, suffix) {
+  let lastErr = null;
+  const waits = [800, 1500, 2500, 4000, 6000];
+
+  for (let i = 0; i < waits.length; i++) {
+    try {
+      await channel.setName(targetName);
+    } catch (e) {
+      lastErr = e;
+      logLocal(`❌ setName erro (tentativa ${i + 1}) channel=${channel.id}: ${e?.message || e}`);
+    }
+
+    await sleep(waits[i]);
+
     const fresh = await fetchChannelSafe(guild, channel.id);
     if (!fresh) return { ok: false, err: { code: 10003, message: 'Unknown Channel' } };
+
     if ((fresh.name || '').toLowerCase().endsWith(suffix)) return { ok: true };
   }
+
   return { ok: false, err: lastErr };
+}
+
+function acquireLock(channelId) {
+  if (ticketLocks.get(channelId)) return false;
+  ticketLocks.set(channelId, true);
+  return true;
+}
+function releaseLock(channelId) {
+  ticketLocks.delete(channelId);
 }
 
 /* ================= UI ================= */
 function rowTicket() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('ticket_salvar').setLabel('💾 Salvar').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('ticket_fechar').setLabel('🔒 Fechar ticket').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('ticket_fechar').setLabel('🔒 Fechar').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('ticket_abrir').setLabel('🔓 Abrir').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId('ticket_excluir').setLabel('🗑 Excluir').setStyle(ButtonStyle.Danger),
   );
 }
 
+/* ================= PRESENÇA UI ================= */
 function buildPainelPresencaPayload() {
   const linhas = telefones.map(t => {
     const st = estadoTelefones[t] || 'Livre';
     const ocupado = st !== 'Livre';
     const bolinha = ocupado ? '🔴' : '🟢';
-    const who = ocupado ? st : 'Livre';
-    return `${bolinha} ${t} — ${who}`;
+    return `${bolinha} ${t} — ${ocupado ? st : 'Livre'}`;
   }).join('\n');
 
   const rowTelefones = new ActionRowBuilder().addComponents(
     ...telefones.map(t =>
-      new ButtonBuilder()
-        .setCustomId(`presenca_tel_${t}`)
-        .setLabel(`${t}`)
-        .setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId(`presenca_tel_${t}`).setLabel(`${t}`).setStyle(ButtonStyle.Success)
     )
   );
 
@@ -228,22 +247,13 @@ function menuTelefones(customId, list, placeholder = 'Selecione um telefone') {
   const safeOptions = options.length ? options : [{ label: 'Nenhum disponível', value: '__none__', description: 'Nada para selecionar.' }];
 
   return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(customId)
-      .setPlaceholder(placeholder)
-      .addOptions(safeOptions)
-      .setMinValues(1)
-      .setMaxValues(1)
+    new StringSelectMenuBuilder().setCustomId(customId).setPlaceholder(placeholder).addOptions(safeOptions).setMinValues(1).setMaxValues(1)
   );
 }
 
 function menuUsuario(customId, placeholder = 'Selecione o membro') {
   return new ActionRowBuilder().addComponents(
-    new UserSelectMenuBuilder()
-      .setCustomId(customId)
-      .setPlaceholder(placeholder)
-      .setMinValues(1)
-      .setMaxValues(1)
+    new UserSelectMenuBuilder().setCustomId(customId).setPlaceholder(placeholder).setMinValues(1).setMaxValues(1)
   );
 }
 
@@ -254,11 +264,9 @@ async function upsertPainelAbrirTicket() {
 
   const payload = {
     content: '🎫 **ATENDIMENTO — ABRIR TICKET**',
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('abrir_ticket').setLabel('📂 Abrir Ticket').setStyle(ButtonStyle.Primary)
-      ),
-    ],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('abrir_ticket').setLabel('📂 Abrir Ticket').setStyle(ButtonStyle.Primary)
+    )],
   };
 
   const msgs = await canal.messages.fetch({ limit: 25 }).catch(() => null);
@@ -312,7 +320,6 @@ client.once('clientReady', async () => {
 client.on('interactionCreate', async (interaction) => {
   try {
     if (!interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isUserSelectMenu()) return;
-
     logLocal(`[CLICK] customId=${interaction.customId} channel=${interaction.channelId} user=${interaction.user?.id}`);
 
     /* ================= PRESENÇA ================= */
@@ -344,14 +351,10 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (interaction.customId === 'presenca_desconectar_todos') {
-        const antes = Object.entries(estadoTelefones)
-          .filter(([_, v]) => v === `<@${interaction.user.id}>`)
-          .map(([k]) => k);
-
+        const antes = Object.entries(estadoTelefones).filter(([_, v]) => v === `<@${interaction.user.id}>`).map(([k]) => k);
         for (const t of antes) estadoTelefones[t] = 'Livre';
         await upsertPainelPresenca();
         await toast(interaction, '🔴 Você foi desconectado de todos.', 3000);
-
         if (antes.length) await appendDailyLog(`<@${interaction.user.id}> desconectou de TODOS: ${antes.map(t => `**${t}**`).join(', ')}.`);
         return;
       }
@@ -361,8 +364,6 @@ client.on('interactionCreate', async (interaction) => {
         const lista = (minhaLista.length || !isStaff(interaction.member))
           ? minhaLista
           : Object.entries(estadoTelefones).filter(([_, v]) => v !== 'Livre').map(([k]) => k);
-
-        fluxoPresenca.set(interaction.user.id, { action: 'desconectar_um' });
 
         await enviarMsgTempNoCanal(interaction.channel, {
           content: `🟠 <@${interaction.user.id}>, selecione o telefone para desconectar:`,
@@ -388,8 +389,6 @@ client.on('interactionCreate', async (interaction) => {
 
       if (interaction.customId === 'presenca_forcar') {
         const ocupados = Object.entries(estadoTelefones).filter(([_, v]) => v !== 'Livre').map(([k]) => k);
-        fluxoPresenca.set(interaction.user.id, { action: 'forcar' });
-
         await enviarMsgTempNoCanal(interaction.channel, {
           content: `⚠️ <@${interaction.user.id}>, selecione o telefone para **forçar desconexão**:`,
           components: [menuTelefones('presenca_forcar_select', ocupados)],
@@ -475,7 +474,6 @@ client.on('interactionCreate', async (interaction) => {
       const guild = interaction.guild;
       const userId = interaction.user.id;
 
-      // evita duplicar por cache (procura topic)
       const existing = guild.channels.cache.find(c => c?.type === ChannelType.GuildText && (c.topic || '').includes(`ticket-owner:${userId}`));
       if (existing) return toast(interaction, `⚠️ Você já tem ticket: ${existing}`, 5000);
 
@@ -484,18 +482,14 @@ client.on('interactionCreate', async (interaction) => {
         type: ChannelType.GuildText,
         parent: CATEGORIA_TICKET_ID,
         permissionOverwrites: [
-          // bot explícito
           { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageChannels] },
-          // staff role
           { id: CARGO_STAFF_ID, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
-          // dono
           { id: userId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
-          // everyone deny
           { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
         ],
       });
 
-      await canal.setTopic(`ticket-owner:${userId}`).catch(() => {});
+      await canal.setTopic(`ticket-owner:${userId} ticket-state:aberto`).catch(() => {});
       ticketsAbertos.set(userId, canal.id);
 
       await canal.send({ content: `🎫 Ticket de <@${userId}>`, components: [rowTicket()] });
@@ -506,100 +500,121 @@ client.on('interactionCreate', async (interaction) => {
       await ackUpdate(interaction);
 
       const guild = interaction.guild;
-      const ch = await fetchChannelSafe(guild, interaction.channelId);
-      if (!ch) return toast(interaction, '⚠️ Não consegui acessar o canal (Discord retornou 10003).', 9000);
+      const channelId = interaction.channelId;
 
-      const ownerId = getTicketOwnerIdFromChannel(ch);
-      if (!ownerId) return toast(interaction, '⚠️ Ticket sem owner no topic.', 7000);
-
-      if (interaction.customId === 'ticket_fechar') {
-        const autorizado = (interaction.user.id === ownerId) || isStaff(interaction.member);
-        if (!autorizado) return toast(interaction, '🚫 Apenas dono ou staff pode fechar.', 5000);
-
-        await ch.permissionOverwrites.edit(ownerId, { SendMessages: false }).catch(() => {});
-        const alvo = setTicketName(ch.name, 'fechado');
-        const res = await renameWithVerify(guild, ch, alvo, '-fechado');
-        if (!res.ok) return toast(interaction, '⚠️ Não consegui renomear para -fechado.', 8000);
-
-        return toast(interaction, '🔒 Ticket fechado.', 3500);
+      if (!acquireLock(channelId)) {
+        return toast(interaction, '⏳ Aguarde… Estou processando este ticket.', 2500);
       }
 
-      if (interaction.customId === 'ticket_abrir') {
-        if (!isStaff(interaction.member)) return toast(interaction, '🚫 Apenas staff pode reabrir.', 5000);
+      try {
+        const ch = await fetchChannelSafe(guild, channelId);
+        if (!ch) return toast(interaction, '⚠️ Não consegui acessar o canal (10003).', 9000);
 
-        const status = getTicketStatusFromName(ch.name);
-        if (status !== 'fechado') return toast(interaction, 'ℹ️ O ticket já está aberto.', 4000);
-
-        // libera dono e renomeia para -aberto
-        await ch.permissionOverwrites.edit(ownerId, { SendMessages: true }).catch(() => {});
-        const alvo = setTicketName(ch.name, 'aberto');
-        const res = await renameWithVerify(guild, ch, alvo, '-aberto');
-        if (!res.ok) {
-          logLocal(`❌ ticket_abrir rename falhou no canal ${ch.id}: ${res.err?.message || res.err}`);
-          // fallback: pelo menos liberou para falar
-          return toast(interaction, '⚠️ Liberei o dono para falar, mas falhei ao renomear para -aberto.', 9000);
+        // valida categoria (pra não operar fora)
+        if (String(ch.parentId) !== String(CATEGORIA_TICKET_ID)) {
+          return toast(interaction, '⚠️ Este canal não está na categoria de tickets.', 8000);
         }
 
-        return toast(interaction, '🔓 Ticket reaberto.', 3500);
-      }
+        const ownerId = getTicketOwnerIdFromChannel(ch);
+        if (!ownerId) return toast(interaction, '⚠️ Ticket sem owner no topic.', 7000);
 
-      if (interaction.customId === 'ticket_excluir') {
-        const autorizado = (interaction.user.id === ownerId) || isStaff(interaction.member);
-        if (!autorizado) return toast(interaction, '🚫 Apenas dono ou staff pode excluir.', 5000);
+        // estado do topic tem prioridade
+        const stateTopic = getTicketStateFromTopic(ch);
+        const stateName = getTicketStatusFromName(ch.name);
+        const effectiveState = stateTopic || stateName;
 
-        ticketsAbertos.delete(ownerId);
-        await toast(interaction, '🗑 Ticket será apagado em 2s...', 2000);
-        setTimeout(() => ch.delete().catch(() => {}), 2000);
-        return;
-      }
+        if (interaction.customId === 'ticket_fechar') {
+          const autorizado = (interaction.user.id === ownerId) || isStaff(interaction.member);
+          if (!autorizado) return toast(interaction, '🚫 Apenas dono ou staff pode fechar.', 5000);
 
-      if (interaction.customId === 'ticket_salvar') {
-        if (!isStaff(interaction.member)) return toast(interaction, '🚫 Apenas staff pode salvar.', 5000);
+          await ch.permissionOverwrites.edit(ownerId, { SendMessages: false }).catch((e) => logLocal(`❌ overwrite fechar: ${e?.message || e}`));
 
-        const status = getTicketStatusFromName(ch.name);
-        if (status !== 'fechado') return toast(interaction, 'ℹ️ Feche o ticket antes de salvar.', 6000);
+          const alvo = setTicketName(ch.name, 'fechado');
+          const res = await renameWithBackoffVerify(guild, ch, alvo, '-fechado');
+          if (!res.ok) return toast(interaction, '⚠️ Falhei em renomear para -fechado. Tente novamente em 10s.', 9000);
 
-        const msgs = await ch.messages.fetch({ limit: 100 }).catch(() => null);
-        if (!msgs) return toast(interaction, '⚠️ Não consegui buscar mensagens.', 6000);
-
-        const arr = msgs.reverse().toJSON();
-        const transcript = arr.map(m => `[${brTimeString(m.createdAt)}] ${m.author.tag}: ${m.content || ''}`).join('\n');
-
-        const participantes = Array.from(new Set(arr.map(m => m.author.tag))).slice(0, 15);
-        const primeirasLinhas = arr.slice(0, 6).map(m => `${m.author.username}: ${(m.content || '(sem texto)').replace(/\s+/g, ' ').slice(0, 120)}`);
-
-        const resumo = [
-          `🧾 **Resumo do Ticket**`,
-          `• Canal: **${ch.name}**`,
-          `• Data: **${brTimeString()}**`,
-          `• Mensagens (últimas 100): **${arr.length}**`,
-          `• Participantes:`,
-          ...(participantes.length ? participantes.map(p => `- ${p}`) : ['- (sem participantes)']),
-          ``,
-          `📌 **Prévia:**`,
-          ...(primeirasLinhas.length ? primeirasLinhas.map(l => `> ${l}`) : ['> (sem mensagens)']),
-        ].join('\n');
-
-        const safeResumo = resumo.length > 1900 ? (resumo.slice(0, 1900) + '\n...(truncado)') : resumo;
-
-        // ✅ salva só no canal transcript
-        const canalTranscript = await client.channels.fetch(CANAL_TRANSCRIPT_ID).catch(() => null);
-        if (canalTranscript?.isTextBased()) await canalTranscript.send({ content: safeResumo }).catch(() => {});
-
-        // DM dono com resumo + txt
-        const dono = await client.users.fetch(ownerId).catch(() => null);
-        if (dono) {
-          const buffer = Buffer.from(transcript || 'Sem mensagens', 'utf8');
-          await dono.send({
-            content: `📄 Seu ticket foi salvo.\n\n${safeResumo}`,
-            files: [{ attachment: buffer, name: `transcript-${ch.name}.txt` }],
-          }).catch(() => {});
+          await setTicketStateOnTopic(ch, 'fechado');
+          return toast(interaction, '🔒 Ticket fechado.', 3500);
         }
 
-        ticketsAbertos.delete(ownerId);
-        await toast(interaction, '💾 Ticket salvo. Canal será apagado.', 3500);
-        setTimeout(() => ch.delete().catch(() => {}), 2500);
-        return;
+        if (interaction.customId === 'ticket_abrir') {
+          if (!isStaff(interaction.member)) return toast(interaction, '🚫 Apenas staff pode reabrir.', 5000);
+
+          if (effectiveState !== 'fechado') return toast(interaction, 'ℹ️ O ticket já está aberto.', 4000);
+
+          await ch.permissionOverwrites.edit(ownerId, { SendMessages: true }).catch((e) => logLocal(`❌ overwrite abrir: ${e?.message || e}`));
+
+          const alvo = setTicketName(ch.name, 'aberto');
+          const res = await renameWithBackoffVerify(guild, ch, alvo, '-aberto');
+          if (!res.ok) {
+            logLocal(`❌ ticket_abrir rename falhou canal=${ch.id}: ${res.err?.message || res.err}`);
+            // fallback: pelo menos liberou o dono
+            await setTicketStateOnTopic(ch, 'aberto').catch(() => {});
+            return toast(interaction, '⚠️ Liberei o dono, mas falhei em renomear. Tente de novo em 10s.', 9000);
+          }
+
+          await setTicketStateOnTopic(ch, 'aberto');
+          return toast(interaction, '🔓 Ticket reaberto.', 3500);
+        }
+
+        if (interaction.customId === 'ticket_excluir') {
+          const autorizado = (interaction.user.id === ownerId) || isStaff(interaction.member);
+          if (!autorizado) return toast(interaction, '🚫 Apenas dono ou staff pode excluir.', 5000);
+
+          ticketsAbertos.delete(ownerId);
+          await toast(interaction, '🗑 Ticket será apagado em 2s...', 2000);
+          setTimeout(() => ch.delete().catch(() => {}), 2000);
+          return;
+        }
+
+        if (interaction.customId === 'ticket_salvar') {
+          if (!isStaff(interaction.member)) return toast(interaction, '🚫 Apenas staff pode salvar.', 5000);
+
+          if (effectiveState !== 'fechado') return toast(interaction, 'ℹ️ Feche o ticket antes de salvar.', 6000);
+
+          const msgs = await ch.messages.fetch({ limit: 100 }).catch(() => null);
+          if (!msgs) return toast(interaction, '⚠️ Não consegui buscar mensagens.', 6000);
+
+          const arr = msgs.reverse().toJSON();
+          const transcript = arr.map(m => `[${brTimeString(m.createdAt)}] ${m.author.tag}: ${m.content || ''}`).join('\n');
+
+          const participantes = Array.from(new Set(arr.map(m => m.author.tag))).slice(0, 15);
+          const primeirasLinhas = arr.slice(0, 6).map(m => `${m.author.username}: ${(m.content || '(sem texto)').replace(/\s+/g, ' ').slice(0, 120)}`);
+
+          const resumo = [
+            `🧾 **Resumo do Ticket**`,
+            `• Canal: **${ch.name}**`,
+            `• Data: **${brTimeString()}**`,
+            `• Mensagens (últimas 100): **${arr.length}**`,
+            `• Participantes:`,
+            ...(participantes.length ? participantes.map(p => `- ${p}`) : ['- (sem participantes)']),
+            ``,
+            `📌 **Prévia:**`,
+            ...(primeirasLinhas.length ? primeirasLinhas.map(l => `> ${l}`) : ['> (sem mensagens)']),
+          ].join('\n');
+
+          const safeResumo = resumo.length > 1900 ? (resumo.slice(0, 1900) + '\n...(truncado)') : resumo;
+
+          const canalTranscript = await client.channels.fetch(CANAL_TRANSCRIPT_ID).catch(() => null);
+          if (canalTranscript?.isTextBased()) await canalTranscript.send({ content: safeResumo }).catch(() => {});
+
+          const dono = await client.users.fetch(ownerId).catch(() => null);
+          if (dono) {
+            const buffer = Buffer.from(transcript || 'Sem mensagens', 'utf8');
+            await dono.send({
+              content: `📄 Seu ticket foi salvo.\n\n${safeResumo}`,
+              files: [{ attachment: buffer, name: `transcript-${ch.name}.txt` }],
+            }).catch(() => {});
+          }
+
+          ticketsAbertos.delete(ownerId);
+          await toast(interaction, '💾 Ticket salvo. Canal será apagado.', 3500);
+          setTimeout(() => ch.delete().catch(() => {}), 2500);
+          return;
+        }
+
+      } finally {
+        releaseLock(channelId);
       }
     }
 
