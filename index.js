@@ -59,7 +59,7 @@ let presencaPanelMsgId = null;
 // Tickets
 const ticketsAbertos = new Map(); // userId -> channelId
 
-// Fluxos do painel
+// Fluxos do painel de presença
 const fluxoPresenca = new Map(); // userId -> { action, step, telefone? }
 
 /* ================= HELPERS ================= */
@@ -67,6 +67,11 @@ function isStaff(member) {
   return !!member?.roles?.cache?.has(CARGO_STAFF_ID);
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Para botões/menus: encerra "pensando..." imediatamente
 async function ackUpdate(interaction) {
   try {
     if (!interaction.deferred && !interaction.replied) {
@@ -75,13 +80,17 @@ async function ackUpdate(interaction) {
   } catch {}
 }
 
+// Ephemeral que some sozinho (use após ackUpdate)
 async function avisarEphemeralAutoDelete(interaction, content, ms = 3500) {
   try {
     const msg = await interaction.followUp({ content, flags: 64 }).catch(() => null);
-    if (msg?.id) setTimeout(() => interaction.webhook?.deleteMessage(msg.id).catch(() => {}), ms);
+    if (msg?.id) {
+      setTimeout(() => interaction.webhook?.deleteMessage(msg.id).catch(() => {}), ms);
+    }
   } catch {}
 }
 
+// Envia mensagem no canal e apaga após ms (menus temporários)
 async function enviarMsgTempNoCanal(channel, payload, ms = 20000) {
   const msg = await channel.send(payload).catch(() => null);
   if (!msg) return null;
@@ -95,15 +104,18 @@ function getTicketOwnerIdFromChannel(channel) {
   return match ? match[1] : null;
 }
 
+// Nome base do ticket: remove sufixos conhecidos
 function ticketBaseName(name) {
   return (name || '')
     .replace(/-aberto$/i, '')
     .replace(/-fechado$/i, '')
     .replace(/-edicao$/i, '');
 }
+
 function setTicketName(name, status /* 'aberto'|'fechado'|'edicao' */) {
   return `${ticketBaseName(name)}-${status}`;
 }
+
 function getTicketStatusFromName(name) {
   const n = (name || '').toLowerCase();
   if (n.endsWith('-fechado')) return 'fechado';
@@ -114,10 +126,25 @@ function getTicketStatusFromName(name) {
 /* ================= UI BUILDERS ================= */
 function rowTicket() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('ticket_salvar').setLabel('💾 Salvar').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('ticket_fechar').setLabel('🔒 Fechar ticket').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('ticket_editar').setLabel('✏️ Editar').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('ticket_excluir').setLabel('🗑 Excluir').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId('ticket_salvar')
+      .setLabel('💾 Salvar')
+      .setStyle(ButtonStyle.Primary),
+
+    new ButtonBuilder()
+      .setCustomId('ticket_fechar')
+      .setLabel('🔒 Fechar ticket')
+      .setStyle(ButtonStyle.Secondary),
+
+    new ButtonBuilder()
+      .setCustomId('ticket_editar')
+      .setLabel('✏️ Editar')
+      .setStyle(ButtonStyle.Success),
+
+    new ButtonBuilder()
+      .setCustomId('ticket_excluir')
+      .setLabel('🗑 Excluir')
+      .setStyle(ButtonStyle.Danger)
   );
 }
 
@@ -133,7 +160,10 @@ function buildPainelPresencaPayload() {
 
   const rowTelefones = new ActionRowBuilder().addComponents(
     ...telefones.map(t =>
-      new ButtonBuilder().setCustomId(`presenca_tel_${t}`).setLabel(`📞 ${t}`).setStyle(ButtonStyle.Success)
+      new ButtonBuilder()
+        .setCustomId(`presenca_tel_${t}`)
+        .setLabel(`📞 ${t}`)
+        .setStyle(ButtonStyle.Success)
     )
   );
 
@@ -150,7 +180,11 @@ function buildPainelPresencaPayload() {
 function menuTelefones(customId, { apenasOcupados = false, placeholder = 'Selecione um telefone' } = {}) {
   const options = telefones
     .filter(t => !apenasOcupados || ((estadoTelefones[t] || 'Livre') !== 'Livre'))
-    .map(t => ({ label: t, value: t, description: `Status: ${estadoTelefones[t] || 'Livre'}`.slice(0, 100) }));
+    .map(t => ({
+      label: t,
+      value: t,
+      description: `Status: ${estadoTelefones[t] || 'Livre'}`.slice(0, 100),
+    }));
 
   const safeOptions = options.length
     ? options
@@ -168,7 +202,11 @@ function menuTelefones(customId, { apenasOcupados = false, placeholder = 'Seleci
 
 function menuUsuario(customId, placeholder = 'Selecione o membro') {
   return new ActionRowBuilder().addComponents(
-    new UserSelectMenuBuilder().setCustomId(customId).setPlaceholder(placeholder).setMinValues(1).setMaxValues(1)
+    new UserSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .setMinValues(1)
+      .setMaxValues(1)
   );
 }
 
@@ -181,13 +219,20 @@ async function upsertPainelTicket() {
     content: '🎫 **ATENDIMENTO — ABRIR TICKET**',
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('abrir_ticket').setLabel('📂 Abrir Ticket').setStyle(ButtonStyle.Primary)
+        new ButtonBuilder()
+          .setCustomId('abrir_ticket')
+          .setLabel('📂 Abrir Ticket')
+          .setStyle(ButtonStyle.Primary)
       ),
     ],
   };
 
   const msgs = await canal.messages.fetch({ limit: 25 }).catch(() => null);
-  const existente = msgs?.find(m => m.author?.id === client.user.id && (m.content || '').includes('🎫 **ATENDIMENTO — ABRIR TICKET**'));
+  const existente = msgs?.find(m =>
+    m.author?.id === client.user.id &&
+    (m.content || '').includes('🎫 **ATENDIMENTO — ABRIR TICKET**')
+  );
+
   if (existente) await existente.edit(payload).catch(() => {});
   else await canal.send(payload).catch(() => {});
 }
@@ -219,7 +264,10 @@ async function upsertPainelPresenca() {
   }
 
   const msgs = await canal.messages.fetch({ limit: 100 }).catch(() => null);
-  const existente = msgs?.find(m => m.author?.id === client.user.id && (m.content || '').includes('📞 **PAINEL DE PRESENÇA**'));
+  const existente = msgs?.find(m =>
+    m.author?.id === client.user.id &&
+    (m.content || '').includes('📞 **PAINEL DE PRESENÇA**')
+  );
 
   if (existente) {
     presencaPanelMsgId = existente.id;
@@ -238,6 +286,7 @@ async function upsertPainelPresenca() {
 /* ================= TICKETS: RECONSTRUIR NO BOOT ================= */
 async function reconstruirTickets() {
   ticketsAbertos.clear();
+
   const categoria = await client.channels.fetch(CATEGORIA_TICKET_ID).catch(() => null);
   if (!categoria || !categoria.children) return;
 
@@ -270,7 +319,9 @@ async function gerarTranscriptEResumo(channel) {
   if (!msgs) return null;
 
   const arr = msgs.reverse().toJSON();
-  const transcript = arr.map(m => `[${m.createdAt.toLocaleString()}] ${m.author.tag}: ${m.content || ''}`).join('\n');
+  const transcript = arr
+    .map(m => `[${m.createdAt.toLocaleString()}] ${m.author.tag}: ${m.content || ''}`)
+    .join('\n');
 
   const participantesSet = new Set(arr.map(m => m.author.tag));
   const participantes = Array.from(participantesSet).slice(0, 15);
@@ -463,7 +514,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // Fechar (dono OU staff) — funciona como "finalizar edição" também
+    // Fechar (dono OU staff) — volta de edição para fechado também
     if (interaction.isButton() && interaction.customId === 'ticket_fechar') {
       await ackUpdate(interaction);
 
@@ -492,7 +543,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // Editar (somente staff) — somente quando fechado
+    // Editar (somente staff) — fechado -> edicao (ROBUSTO: fetch real + retry + verify)
     if (interaction.isButton() && interaction.customId === 'ticket_editar') {
       await ackUpdate(interaction);
 
@@ -504,16 +555,56 @@ client.on('interactionCreate', async (interaction) => {
         const donoId = getTicketOwnerIdFromChannel(interaction.channel);
         if (!donoId) return avisarEphemeralAutoDelete(interaction, '⚠️ Não encontrei o dono do ticket.', 3500);
 
-        const status = getTicketStatusFromName(interaction.channel.name);
+        // Busca o canal real (não confiar só no cache)
+        const ch = await interaction.guild.channels.fetch(interaction.channel.id);
+        const status = getTicketStatusFromName(ch.name);
+
         if (status !== 'fechado') {
           return avisarEphemeralAutoDelete(interaction, 'ℹ️ Para editar, o ticket precisa estar FECHADO.', 4500);
         }
 
-        await interaction.channel.permissionOverwrites.edit(donoId, { SendMessages: true });
-        await interaction.channel.setName(setTicketName(interaction.channel.name, 'edicao'));
+        const alvo = setTicketName(ch.name, 'edicao');
 
-        await avisarEphemeralAutoDelete(interaction, '✏️ Ticket em EDIÇÃO (liberado para ajustes).', 4500);
+        // libera dono
+        await ch.permissionOverwrites.edit(donoId, { SendMessages: true });
+
+        // rename com retry + verify
+        let ok = false;
+        let lastErr = null;
+
+        for (let i = 0; i < 3; i++) {
+          try {
+            await ch.setName(alvo);
+          } catch (e) {
+            lastErr = e;
+          }
+
+          await sleep(900);
+          const fresh = await interaction.guild.channels.fetch(ch.id);
+          if ((fresh.name || '').toLowerCase().endsWith('-edicao')) {
+            ok = true;
+            break;
+          }
+        }
+
+        if (!ok) {
+          console.error('❌ Falha ao renomear para edição:', {
+            atual: ch.name,
+            alvo: alvo,
+            erro: lastErr?.message || lastErr,
+          });
+
+          return avisarEphemeralAutoDelete(
+            interaction,
+            '⚠️ Não consegui mudar o ticket para **-edicao**. Tente novamente.',
+            7000
+          );
+        }
+
+        logPainel(`Ticket em edição: ${alvo} (por ${interaction.user.tag})`);
+        await avisarEphemeralAutoDelete(interaction, '✏️ Ticket em EDIÇÃO (status -edicao aplicado).', 5000);
         return;
+
       } catch (err) {
         console.error('❌ ticket_editar:', err);
         await avisarEphemeralAutoDelete(interaction, '⚠️ Erro ao colocar ticket em edição.', 4500);
@@ -544,7 +635,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // Salvar (somente staff) — ✅ AGORA SÓ PERMITE SE ESTIVER FECHADO
+    // Salvar (somente staff) — somente se FECHADO
     if (interaction.isButton() && interaction.customId === 'ticket_salvar') {
       await ackUpdate(interaction);
 
