@@ -1,13 +1,3 @@
-/**
- * index.js — Bot Discord (Render) — Painel de Presença + Tickets
- * ✅ Painel de Presença SEM limitação de cargo (qualquer um pode usar, inclusive "Forçar")
- * ✅ Painel NÃO some / NÃO duplica: mensagem do painel é fixada por ID no TOPIC do canal (presenca-panel:<messageId>)
- * ✅ Menus: Desconectar UM, Transferir (telefone -> membro), Forçar (telefone)
- * ✅ Notificações do painel são ephemeral e tentam sumir depois
- * ✅ Tickets: staff limita reabrir/salvar/excluir; salvar transcript gera resumo, DM pro dono e apaga o canal
- * ✅ Render-safe: logs não derrubam processo, HTTP healthcheck, harden errors
- */
-
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
@@ -69,7 +59,7 @@ let presencaPanelMsgId = null;
 // Tickets
 const ticketsAbertos = new Map(); // userId -> channelId
 
-// Fluxos de menu do painel
+// Fluxos do painel (amarrado ao user)
 const fluxoPresenca = new Map(); // userId -> { action, step, telefone? }
 
 /* ================= HELPERS ================= */
@@ -77,7 +67,7 @@ function isStaff(member) {
   return !!member?.roles?.cache?.has(CARGO_STAFF_ID);
 }
 
-// Ephemeral (flags)
+// Ephemeral simples (não apaga nada automaticamente)
 async function responder(interaction, payload) {
   try {
     const data = { ...payload, flags: 64 };
@@ -86,24 +76,24 @@ async function responder(interaction, payload) {
   } catch {}
 }
 
-// Ephemeral que tenta sumir depois
-async function responderTemp(interaction, payload, ms = 7000) {
-  try {
-    const data = { ...payload, flags: 64 };
-    let sent;
-    if (interaction.replied || interaction.deferred) sent = await interaction.followUp(data);
-    else sent = await interaction.reply(data);
-
-    setTimeout(async () => {
-      try { await interaction.deleteReply().catch(() => {}); } catch {}
-      try { if (sent?.deletable) await sent.delete().catch(() => {}); } catch {}
-    }, ms);
-
-    return sent;
-  } catch {}
+// Ephemeral simples “curto” (sem deleteReply pra não arriscar apagar painel)
+async function responderTemp(interaction, payload) {
+  return responder(interaction, payload);
 }
 
-// Ack rápido p/ evitar "interação falhou" em ações de ticket
+// Envia mensagem no canal e apaga após ms (menu temporário)
+async function enviarMsgTempNoCanal(channel, payload, ms = 20000) {
+  const msg = await channel.send(payload).catch(() => null);
+  if (!msg) return null;
+
+  setTimeout(() => {
+    msg.delete().catch(() => {});
+  }, ms);
+
+  return msg;
+}
+
+// Ack rápido p/ evitar "interação falhou" em tickets
 async function ackEphemeral(interaction) {
   try {
     if (!interaction.deferred && !interaction.replied) {
@@ -226,9 +216,8 @@ async function upsertPainelTicket() {
 }
 
 /**
- * Painel de presença "à prova de sumiço":
+ * Painel de presença estável:
  * - guarda o ID da mensagem no TOPIC do canal: presenca-panel:<messageId>
- * - sempre tenta editar por esse ID
  */
 async function upsertPainelPresenca() {
   const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID).catch(() => null);
@@ -238,7 +227,7 @@ async function upsertPainelPresenca() {
   const match = topic.match(/presenca-panel:(\d+)/);
   const topicMsgId = match ? match[1] : null;
 
-  // 1) prioridade: ID gravado no topic
+  // 1) tenta editar via ID do topic
   if (topicMsgId) {
     const msg = await canal.messages.fetch(topicMsgId).catch(() => null);
     if (msg) {
@@ -248,7 +237,7 @@ async function upsertPainelPresenca() {
     }
   }
 
-  // 2) fallback: ID em memória
+  // 2) tenta via ID em memória
   if (presencaPanelMsgId) {
     const msg = await canal.messages.fetch(presencaPanelMsgId).catch(() => null);
     if (msg) {
@@ -258,7 +247,7 @@ async function upsertPainelPresenca() {
     }
   }
 
-  // 3) fallback: busca mais profunda
+  // 3) busca mais fundo
   const msgs = await canal.messages.fetch({ limit: 100 }).catch(() => null);
   const existente = msgs?.find(m =>
     m.author?.id === client.user.id &&
@@ -353,18 +342,18 @@ client.on('interactionCreate', async (interaction) => {
   try {
     /* ================= PAINEL DE PRESENÇA (SEM LIMITAÇÃO) ================= */
     if (interaction.isButton() && interaction.customId.startsWith('presenca_')) {
+      // Ack rápido pro botão não falhar
       await interaction.deferUpdate().catch(() => {});
 
-      // clique telefone: toggle Livre <-> binabot (você pode trocar depois)
+      // clique telefone: toggle Livre <-> binabot
       if (interaction.customId.startsWith('presenca_tel_')) {
         const tel = interaction.customId.replace('presenca_tel_', '');
         if (estadoTelefones[tel] == null) {
-          await responderTemp(interaction, { content: '⚠️ Telefone inválido.' }, 5000);
+          await responderTemp(interaction, { content: '⚠️ Telefone inválido.' });
         } else {
           estadoTelefones[tel] = (estadoTelefones[tel] === 'Livre') ? 'binabot' : 'Livre';
           logPainel(`Presença: ${tel} -> ${estadoTelefones[tel]} (por ${interaction.user.tag})`);
         }
-        // Atualiza pelo método "topic id" (não some)
         await upsertPainelPresenca();
         return;
       }
@@ -373,34 +362,45 @@ client.on('interactionCreate', async (interaction) => {
         for (const t of telefones) estadoTelefones[t] = 'Livre';
         logPainel(`Desconectar TODOS (por ${interaction.user.tag})`);
         await upsertPainelPresenca();
-        await responderTemp(interaction, { content: '🔴 Desconectado de todos.' }, 6000);
+
+        // notificação ephemeral curta
+        await responderTemp(interaction, { content: '🔴 Desconectado de todos.' });
         return;
       }
 
+      // Desconectar UM — menu no canal que some
       if (interaction.customId === 'presenca_desconectar_um') {
         fluxoPresenca.set(interaction.user.id, { action: 'desconectar_um', step: 'telefone' });
-        await responderTemp(interaction, {
-          content: '🟠 Selecione o telefone que deseja **desconectar**:',
+
+        await enviarMsgTempNoCanal(interaction.channel, {
+          content: `🟠 <@${interaction.user.id}>, selecione o telefone que deseja **desconectar**:`,
           components: [menuTelefones('presenca_desconectar_um_select', { apenasOcupados: true, placeholder: 'Telefone para desconectar' })],
-        }, 12000);
+        }, 20000);
+
         return;
       }
 
+      // Transferir — menu telefone no canal -> menu usuário no canal
       if (interaction.customId === 'presenca_transferir') {
         fluxoPresenca.set(interaction.user.id, { action: 'transferir', step: 'telefone_origem' });
-        await responderTemp(interaction, {
-          content: '🔵 Selecione o **telefone de origem** para transferir:',
+
+        await enviarMsgTempNoCanal(interaction.channel, {
+          content: `🔵 <@${interaction.user.id}>, selecione o **telefone de origem**:`,
           components: [menuTelefones('presenca_transferir_tel_select', { apenasOcupados: true, placeholder: 'Telefone de origem' })],
-        }, 12000);
+        }, 20000);
+
         return;
       }
 
+      // Forçar — menu no canal que some
       if (interaction.customId === 'presenca_forcar') {
         fluxoPresenca.set(interaction.user.id, { action: 'forcar', step: 'telefone' });
-        await responderTemp(interaction, {
-          content: '⚠️ Selecione o telefone para **forçar desconexão**:',
+
+        await enviarMsgTempNoCanal(interaction.channel, {
+          content: `⚠️ <@${interaction.user.id}>, selecione o telefone para **forçar desconexão**:`,
           components: [menuTelefones('presenca_forcar_select', { apenasOcupados: true, placeholder: 'Telefone para forçar' })],
-        }, 12000);
+        }, 20000);
+
         return;
       }
 
@@ -410,33 +410,57 @@ client.on('interactionCreate', async (interaction) => {
     /* ================= PAINEL DE PRESENÇA (MENUS) ================= */
     if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_desconectar_um_select') {
       await interaction.deferUpdate().catch(() => {});
+
+      // segurança: só quem iniciou o fluxo
+      if (!fluxoPresenca.has(interaction.user.id)) {
+        return responder(interaction, { content: '⚠️ Este menu expirou.' });
+      }
+
       const tel = interaction.values?.[0];
-      if (!tel || tel === '__none__') return responderTemp(interaction, { content: '⚠️ Nenhum telefone disponível.' }, 6000);
+      if (!tel || tel === '__none__') return responder(interaction, { content: '⚠️ Nenhum telefone disponível.' });
 
       estadoTelefones[tel] = 'Livre';
       logPainel(`Desconectar UM: ${tel} (por ${interaction.user.tag})`);
+
       await upsertPainelPresenca();
       fluxoPresenca.delete(interaction.user.id);
-      return responderTemp(interaction, { content: `✅ ${tel} desconectado.` }, 6000);
+
+      // apaga a mensagem do menu (não mexe no painel)
+      interaction.message.delete().catch(() => {});
+
+      return responder(interaction, { content: `✅ ${tel} desconectado.` });
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_transferir_tel_select') {
       await interaction.deferUpdate().catch(() => {});
+
+      if (!fluxoPresenca.has(interaction.user.id)) {
+        return responder(interaction, { content: '⚠️ Este menu expirou.' });
+      }
+
       const tel = interaction.values?.[0];
-      if (!tel || tel === '__none__') return responderTemp(interaction, { content: '⚠️ Nenhum telefone disponível.' }, 6000);
+      if (!tel || tel === '__none__') return responder(interaction, { content: '⚠️ Nenhum telefone disponível.' });
 
       fluxoPresenca.set(interaction.user.id, { action: 'transferir', step: 'usuario', telefone: tel });
-      return responderTemp(interaction, {
-        content: `🔵 Agora selecione o **membro** para transferir o atendimento do telefone **${tel}**:`,
+
+      // apaga o menu de telefone
+      interaction.message.delete().catch(() => {});
+
+      // envia menu usuário no canal (e some)
+      await enviarMsgTempNoCanal(interaction.channel, {
+        content: `🔵 <@${interaction.user.id}>, selecione o **membro** para receber o telefone **${tel}**:`,
         components: [menuUsuario('presenca_transferir_user_select', 'Membro destino')],
-      }, 12000);
+      }, 20000);
+
+      return;
     }
 
     if (interaction.isUserSelectMenu() && interaction.customId === 'presenca_transferir_user_select') {
       await interaction.deferUpdate().catch(() => {});
+
       const fluxo = fluxoPresenca.get(interaction.user.id);
       if (!fluxo || fluxo.action !== 'transferir' || !fluxo.telefone) {
-        return responderTemp(interaction, { content: '⚠️ Fluxo expirou. Clique em Transferir novamente.' }, 7000);
+        return responder(interaction, { content: '⚠️ Fluxo expirou. Clique em Transferir novamente.' });
       }
 
       const userId = interaction.values?.[0];
@@ -448,20 +472,33 @@ client.on('interactionCreate', async (interaction) => {
 
       await upsertPainelPresenca();
       fluxoPresenca.delete(interaction.user.id);
-      return responderTemp(interaction, { content: `✅ Transferido: **${tel}** agora está com <@${userId}>.` }, 7000);
+
+      // apaga o menu usuário
+      interaction.message.delete().catch(() => {});
+
+      return responder(interaction, { content: `✅ Transferido: **${tel}** agora está com <@${userId}>.` });
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_forcar_select') {
       await interaction.deferUpdate().catch(() => {});
+
+      if (!fluxoPresenca.has(interaction.user.id)) {
+        return responder(interaction, { content: '⚠️ Este menu expirou.' });
+      }
+
       const tel = interaction.values?.[0];
-      if (!tel || tel === '__none__') return responderTemp(interaction, { content: '⚠️ Nenhum telefone disponível.' }, 6000);
+      if (!tel || tel === '__none__') return responder(interaction, { content: '⚠️ Nenhum telefone disponível.' });
 
       estadoTelefones[tel] = 'Livre';
       logPainel(`Forçar: ${tel} (por ${interaction.user.tag})`);
 
       await upsertPainelPresenca();
       fluxoPresenca.delete(interaction.user.id);
-      return responderTemp(interaction, { content: `⚠️ Forçado: **${tel}** desconectado.` }, 7000);
+
+      // apaga o menu
+      interaction.message.delete().catch(() => {});
+
+      return responder(interaction, { content: `⚠️ Forçado: **${tel}** desconectado.` });
     }
 
     /* ================= TICKETS ================= */
@@ -528,7 +565,6 @@ client.on('interactionCreate', async (interaction) => {
       return finalizeAck(interaction, '🔓 Ticket reaberto.');
     }
 
-    // salvar transcript: resumo no canal transcript, DM para dono com resumo + txt, apaga ticket
     if (interaction.isButton() && interaction.customId === 'ticket_salvar') {
       await ackEphemeral(interaction);
 
