@@ -23,7 +23,10 @@ const CANAL_PAINEL_PRESENCA_ID = '1458337803715739699';
 const CANAL_ABRIR_TICKET_ID = '1463407852583653479';
 const CATEGORIA_TICKET_ID = '1463703325034676334';
 
+// ✅ Somente aqui salva ticket
 const CANAL_TRANSCRIPT_ID = '1463408206129664128';
+
+// ❌ NÃO usar este canal para salvar ticket
 const CANAL_RELATORIO_ID = '1458342162981716039';
 
 const CARGO_STAFF_ID = '838753379332915280';
@@ -31,6 +34,7 @@ const CARGO_STAFF_ID = '838753379332915280';
 /* ================= LOGS ================= */
 const logsDir = path.resolve(process.cwd(), 'logs');
 try { fs.mkdirSync(logsDir, { recursive: true }); } catch {}
+
 function log(msg) {
   console.log(msg);
   try {
@@ -53,7 +57,6 @@ const client = new Client({
 const telefones = ['Samantha', 'Ingrid', 'Katherine', 'Melissa', 'Rosalia'];
 const estadoTelefones = Object.fromEntries(telefones.map(t => [t, 'Livre']));
 let presencaPanelMsgId = null;
-const fluxoPresenca = new Map();
 
 // TICKETS
 const ticketsAbertos = new Map(); // ownerId -> channelId
@@ -62,6 +65,7 @@ const ticketsAbertos = new Map(); // ownerId -> channelId
 function isStaff(member) {
   return !!member?.roles?.cache?.has(CARGO_STAFF_ID);
 }
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function ackUpdate(interaction) {
@@ -91,11 +95,11 @@ async function renameWithVerify(guild, channel, targetName, suffixToCheck) {
   for (let i = 0; i < 5; i++) {
     try { await channel.setName(targetName); }
     catch (e) { lastErr = e; }
-
     await sleep(900);
 
     const fresh = await fetchChannelSafe(guild, channel.id);
     if (!fresh) return { ok: false, err: { code: 10003, message: 'Unknown Channel' } };
+
     if ((fresh.name || '').toLowerCase().endsWith(suffixToCheck)) return { ok: true, err: null };
   }
   return { ok: false, err: lastErr };
@@ -130,6 +134,7 @@ function rowTicket() {
   );
 }
 
+/* ================= PAINEL PRESENÇA ================= */
 function buildPainelPresencaPayload() {
   const linhas = telefones.map(t => {
     const st = estadoTelefones[t] || 'Livre';
@@ -180,26 +185,6 @@ function menuUsuario(customId, placeholder = 'Selecione o membro') {
   );
 }
 
-/* ================= UPSERT PAINÉIS ================= */
-async function upsertPainelAbrirTicket() {
-  const canal = await client.channels.fetch(CANAL_ABRIR_TICKET_ID).catch(() => null);
-  if (!canal || !canal.isTextBased()) return;
-
-  const payload = {
-    content: '🎫 **ATENDIMENTO — ABRIR TICKET**',
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('abrir_ticket').setLabel('📂 Abrir Ticket').setStyle(ButtonStyle.Primary)
-      ),
-    ],
-  };
-
-  const msgs = await canal.messages.fetch({ limit: 25 }).catch(() => null);
-  const existente = msgs?.find(m => m.author?.id === client.user.id && (m.content || '').includes('🎫 **ATENDIMENTO — ABRIR TICKET**'));
-  if (existente) await existente.edit(payload).catch(() => {});
-  else await canal.send(payload).catch(() => {});
-}
-
 async function upsertPainelPresenca() {
   const canal = await client.channels.fetch(CANAL_PAINEL_PRESENCA_ID).catch(() => null);
   if (!canal || !canal.isTextBased()) return;
@@ -234,6 +219,26 @@ async function upsertPainelPresenca() {
   }
 }
 
+/* ================= PAINEL ABRIR TICKET ================= */
+async function upsertPainelAbrirTicket() {
+  const canal = await client.channels.fetch(CANAL_ABRIR_TICKET_ID).catch(() => null);
+  if (!canal || !canal.isTextBased()) return;
+
+  const payload = {
+    content: '🎫 **ATENDIMENTO — ABRIR TICKET**',
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('abrir_ticket').setLabel('📂 Abrir Ticket').setStyle(ButtonStyle.Primary)
+      ),
+    ],
+  };
+
+  const msgs = await canal.messages.fetch({ limit: 25 }).catch(() => null);
+  const existente = msgs?.find(m => m.author?.id === client.user.id && (m.content || '').includes('🎫 **ATENDIMENTO — ABRIR TICKET**'));
+  if (existente) await existente.edit(payload).catch(() => {});
+  else await canal.send(payload).catch(() => {});
+}
+
 /* ================= READY ================= */
 client.once('clientReady', async () => {
   log('✅ Bot online');
@@ -255,9 +260,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (cid.startsWith('presenca_tel_')) {
         const tel = cid.replace('presenca_tel_', '');
-        if (estadoTelefones[tel] != null) {
-          estadoTelefones[tel] = (estadoTelefones[tel] === 'Livre') ? 'binabot' : 'Livre';
-        }
+        if (estadoTelefones[tel] != null) estadoTelefones[tel] = (estadoTelefones[tel] === 'Livre') ? 'binabot' : 'Livre';
         await upsertPainelPresenca();
         await toast(interaction, `📞 ${tel}: ${estadoTelefones[tel] || 'Livre'}`, 2500);
         return;
@@ -358,11 +361,14 @@ client.on('interactionCreate', async (interaction) => {
           type: ChannelType.GuildText,
           parent: CATEGORIA_TICKET_ID,
           permissionOverwrites: [
-            // ✅ bot explicitamente
+            // ✅ bot explícito
             { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageChannels] },
-            { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-            { id: userId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
+            // staff role explícito
             { id: CARGO_STAFF_ID, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
+            // owner
+            { id: userId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
+            // everyone deny
+            { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
           ],
         });
 
@@ -377,15 +383,17 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // Ações dentro de ticket
     if (interaction.isButton() && cid.startsWith('ticket_')) {
       await ackUpdate(interaction);
 
       const ch = await fetchChannelSafe(interaction.guild, interaction.channelId);
-      if (!ch) return toast(interaction, '⚠️ Este ticket não existe mais (ou o bot não tem acesso).', 8000);
+      if (!ch) {
+        log(`❌ ticket action ${cid}: fetchChannelSafe retornou null (10003). channelId=${interaction.channelId}`);
+        return toast(interaction, '⚠️ O bot não tem acesso efetivo a este canal (Discord retorna 10003).', 9000);
+      }
 
       const ownerId = getTicketOwnerIdFromChannel(ch);
-      if (!ownerId) return toast(interaction, '⚠️ Não encontrei o dono do ticket (topic).', 6000);
+      if (!ownerId) return toast(interaction, '⚠️ Não encontrei o dono do ticket (topic).', 7000);
 
       // FECHAR: dono ou staff
       if (cid === 'ticket_fechar') {
@@ -394,12 +402,14 @@ client.on('interactionCreate', async (interaction) => {
 
         try {
           await ch.permissionOverwrites.edit(ownerId, { SendMessages: false });
+
           const alvo = setTicketName(ch.name, 'fechado');
           const res = await renameWithVerify(interaction.guild, ch, alvo, '-fechado');
           if (!res.ok) {
             log(`❌ Falha renomeando para fechado: ${res.err?.message || res.err}`);
-            return toast(interaction, '⚠️ Não consegui renomear para -fechado. Tente novamente.', 9000);
+            return toast(interaction, '⚠️ Não consegui renomear para -fechado.', 9000);
           }
+
           return toast(interaction, '🔒 Ticket fechado.', 3500);
         } catch (err) {
           log(`❌ ticket_fechar error: ${err?.message || err}`);
@@ -407,7 +417,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      // EDITAR: somente staff, somente se fechado
+      // EDITAR: somente staff + fechado
       if (cid === 'ticket_editar') {
         if (!isStaff(interaction.member)) return toast(interaction, '🚫 Apenas staff pode EDITAR.', 6000);
 
@@ -415,18 +425,22 @@ client.on('interactionCreate', async (interaction) => {
         if (status !== 'fechado') return toast(interaction, 'ℹ️ Para editar, o ticket precisa estar FECHADO.', 6000);
 
         try {
+          // liberar dono para escrever na edição
           await ch.permissionOverwrites.edit(ownerId, { SendMessages: true });
+
           const alvo = setTicketName(ch.name, 'edicao');
           const res = await renameWithVerify(interaction.guild, ch, alvo, '-edicao');
           if (!res.ok) {
             log(`❌ Falha renomeando para edição: ${res.err?.message || res.err}`);
+            // reverte permissão
             await ch.permissionOverwrites.edit(ownerId, { SendMessages: false }).catch(() => {});
             return toast(interaction, '⚠️ Não consegui mudar para -edicao. Aguarde 30–60s e tente novamente.', 10000);
           }
+
           return toast(interaction, '✏️ Ticket em EDIÇÃO (dono liberado).', 7000);
         } catch (err) {
           log(`❌ ticket_editar error: ${err?.message || err}`);
-          return toast(interaction, '⚠️ Erro ao colocar ticket em edição.', 8000);
+          return toast(interaction, '⚠️ Erro ao colocar ticket em edição.', 9000);
         }
       }
 
@@ -441,7 +455,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      // SALVAR: somente staff e somente se fechado
+      // SALVAR: somente staff e somente se fechado — ✅ salva só no transcript channel
       if (cid === 'ticket_salvar') {
         if (!isStaff(interaction.member)) return toast(interaction, '🚫 Apenas staff pode SALVAR.', 6000);
 
@@ -472,12 +486,11 @@ client.on('interactionCreate', async (interaction) => {
 
           const safeResumo = resumo.length > 1900 ? (resumo.slice(0, 1900) + '\n...(truncado)') : resumo;
 
-          const canalRelatorio = await client.channels.fetch(CANAL_RELATORIO_ID).catch(() => null);
-          if (canalRelatorio?.isTextBased()) await canalRelatorio.send({ content: safeResumo }).catch(() => {});
-
+          // ✅ SOMENTE transcript channel
           const canalTranscript = await client.channels.fetch(CANAL_TRANSCRIPT_ID).catch(() => null);
           if (canalTranscript?.isTextBased()) await canalTranscript.send({ content: safeResumo }).catch(() => {});
 
+          // DM dono com resumo + txt
           const user = await client.users.fetch(ownerId).catch(() => null);
           if (user) {
             const buffer = Buffer.from(transcript || 'Sem mensagens', 'utf8');
@@ -502,6 +515,11 @@ client.on('interactionCreate', async (interaction) => {
   } catch (err) {
     log(`❌ interactionCreate fatal: ${err?.message || err}`);
   }
+});
+
+/* ================= READY ================= */
+client.once('clientReady', async () => {
+  log('✅ Bot online (ready hook 2 removido nas versões anteriores)'); // não duplicar mais
 });
 
 /* ================= LOGIN ================= */
