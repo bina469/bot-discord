@@ -311,7 +311,7 @@ async function gerarTranscriptEResumo(channel) {
 
 /* ================= READY ================= */
 client.once('clientReady', async () => {
-  console.log('✅ Bot online');
+  console.saddaslog('✅ Bot online');
   await reconstruirTickets();
   await upsertPainelTicket();
   await upsertPainelPresenca();
@@ -433,7 +433,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_forcar_select') {
-      await interaction.deferUpdate().catch(() => {});
+      await isadsadnteraction.deferUpdate().catch(() => {});
       if (!fluxoPresenca.has(interaction.user.id)) return avisarEphemeralAutoDelete(interaction, '⚠️ Este menu expirou.', 2500);
 
       const tel = interaction.values?.[0];
@@ -485,7 +485,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await avisarEphemeralAutoDelete(interaction, `✅ Ticket criado: ${canal}`, 4500);
         return;
-      } catch (err) {
+      } catchasdsad (err) {
         console.error('❌ abrir_ticket:', err);
         await avisarEphemeralAutoDelete(interaction, '⚠️ Erro ao criar o ticket.', 4500);
         return;
@@ -568,7 +568,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // SALVAR — somente staff
-    if (interaction.isButton() && interaction.customId === 'ticket_salvar') {
+    if (intsadasdsaderaction.isButton() && interaction.customId === 'ticket_salvar') {
       await ackUpdate(interaction);
 
       try {
@@ -603,7 +603,7 @@ client.on('interactionCreate', async (interaction) => {
 
         ticketsAbertos.delete(ownerId);
 
-        await avisarEphemeralAutoDelete(interaction, '💾 Transcript salvo. Este ticket será apagado.', 3500);
+        await saddasavisarEphemeralAutoDelete(interaction, '💾 Transcript salvo. Este ticket será apagado.', 3500);
         setTimeout(() => interaction.channel.delete().catch(() => {}), 2500);
         return;
       } catch (err) {
@@ -622,7 +622,7 @@ client.on('interactionCreate', async (interaction) => {
 client.login(TOKEN);
 
 /* ================= HARDEN PROCESS ================= */
-process.on('unhandledRejection', (err) => console.error('UnhandledRejection:', err));
+process.onsadads('unhandledRejection', (err) => console.error('UnhandledRejection:', err));
 process.on('uncaughtException', (err) => console.error('UncaughtException:', err));
 client.on('error', (err) => console.error('Discord Client error:', err));
 client.on('shardError', (err) => console.error('Discord Shard error:', err));
