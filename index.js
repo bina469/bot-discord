@@ -28,11 +28,10 @@ const CARGO_STAFF_ID = '838753379332915280';
 const logsDir = path.resolve(process.cwd(), 'logs');
 try { fs.mkdirSync(logsDir, { recursive: true }); } catch {}
 function log(msg) {
+  console.log(msg);
   try {
-    fs.appendFileSync(path.join(logsDir, 'painel.log'), `[${new Date().toLocaleString()}] ${msg}\n`, 'utf8');
-  } catch (e) {
-    console.error('log write error:', e);
-  }
+    fs.appendFileSync(path.join(logsDir, 'bot.log'), `[${new Date().toLocaleString()}] ${msg}\n`, 'utf8');
+  } catch {}
 }
 
 /* ================= CLIENT ================= */
@@ -40,31 +39,48 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
-/* ================= TICKETS STATE ================= */
+/* ================= STATE ================= */
 const ticketsAbertos = new Map(); // ownerId -> channelId
 
 /* ================= HELPERS ================= */
 function isStaff(member) {
   return !!member?.roles?.cache?.has(CARGO_STAFF_ID);
 }
-
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function ackUpdate(interaction) {
   try {
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferUpdate();
-    }
+    if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
   } catch {}
 }
 
-async function toast(interaction, content, ms = 3500) {
+async function toast(interaction, content, ms = 4000) {
   try {
     const msg = await interaction.followUp({ content, flags: 64 }).catch(() => null);
     if (msg?.id) setTimeout(() => interaction.webhook?.deleteMessage(msg.id).catch(() => {}), ms);
   } catch {}
+}
+
+async function fetchChannelSafe(guild, channelId) {
+  try {
+    return await guild.channels.fetch(channelId);
+  } catch (e) {
+    if (e?.code === 10003) return null; // Unknown Channel OR no access
+    throw e;
+  }
+}
+
+async function renameWithVerify(guild, channel, targetName, suffixToCheck) {
+  let lastErr = null;
+  for (let i = 0; i < 4; i++) {
+    try { await channel.setName(targetName); }
+    catch (e) { lastErr = e; }
+    await sleep(900);
+    const fresh = await fetchChannelSafe(guild, channel.id);
+    if (!fresh) return { ok: false, err: { code: 10003, message: 'Unknown Channel' } };
+    if ((fresh.name || '').toLowerCase().endsWith(suffixToCheck)) return { ok: true, err: null };
+  }
+  return { ok: false, err: lastErr };
 }
 
 function getTicketOwnerIdFromChannel(channel) {
@@ -86,31 +102,6 @@ function getTicketStatusFromName(name) {
   return 'aberto';
 }
 
-async function fetchChannelSafe(guild, channelId) {
-  try {
-    return await guild.channels.fetch(channelId);
-  } catch (e) {
-    if (e?.code === 10003) return null; // Unknown Channel
-    throw e;
-  }
-}
-
-async function renameWithVerify(guild, channel, targetName, suffixToCheck) {
-  let lastErr = null;
-  for (let i = 0; i < 4; i++) {
-    try {
-      await channel.setName(targetName);
-    } catch (e) {
-      lastErr = e;
-    }
-    await sleep(900);
-    const fresh = await fetchChannelSafe(guild, channel.id);
-    if (!fresh) return { ok: false, err: { code: 10003, message: 'Unknown Channel' } };
-    if ((fresh.name || '').toLowerCase().endsWith(suffixToCheck)) return { ok: true, err: null };
-  }
-  return { ok: false, err: lastErr };
-}
-
 /* ================= UI ================= */
 function rowTicket() {
   return new ActionRowBuilder().addComponents(
@@ -130,23 +121,24 @@ async function upsertPainelAbrirTicket() {
     content: '🎫 **ATENDIMENTO — ABRIR TICKET**',
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('abrir_ticket')
-          .setLabel('📂 Abrir Ticket')
-          .setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId('abrir_ticket').setLabel('📂 Abrir Ticket').setStyle(ButtonStyle.Primary)
       ),
     ],
   };
 
   const msgs = await canal.messages.fetch({ limit: 25 }).catch(() => null);
-  const existente = msgs?.find(m => m.author?.id === client.user.id && (m.content || '').includes('🎫 **ATENDIMENTO — ABRIR TICKET**'));
+  const existente = msgs?.find(m =>
+    m.author?.id === client.user.id &&
+    (m.content || '').includes('🎫 **ATENDIMENTO — ABRIR TICKET**')
+  );
+
   if (existente) await existente.edit(payload).catch(() => {});
   else await canal.send(payload).catch(() => {});
 }
 
-/* ================= READY (SOMENTE UMA VEZ) ================= */
+/* ================= READY ================= */
 client.once('clientReady', async () => {
-  console.log('✅ Bot online');
+  log('✅ Bot online');
   await upsertPainelAbrirTicket();
 });
 
@@ -155,18 +147,15 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (!interaction.isButton()) return;
 
-    // LOG DE TODO CLIQUE (pra você ver no Render se ele está recebendo o botão)
-    console.log(`[CLICK] customId=${interaction.customId} channel=${interaction.channelId} user=${interaction.user?.id}`);
     log(`[CLICK] customId=${interaction.customId} channel=${interaction.channelId} user=${interaction.user?.id}`);
 
-    /* ======= ABRIR TICKET (criar canal) ======= */
+    /* ===== ABRIR TICKET (criar) ===== */
     if (interaction.customId === 'abrir_ticket') {
       await ackUpdate(interaction);
 
       try {
         const userId = interaction.user.id;
 
-        // se já tem canal no map e ainda existe, bloqueia
         const existenteId = ticketsAbertos.get(userId);
         if (existenteId) {
           const ch = interaction.guild.channels.cache.get(existenteId);
@@ -174,14 +163,39 @@ client.on('interactionCreate', async (interaction) => {
           ticketsAbertos.delete(userId);
         }
 
+        // ✅ Overwrite explícito do BOT (à prova de 10003)
         const canal = await interaction.guild.channels.create({
           name: `ticket-${interaction.user.username}-aberto`,
           type: ChannelType.GuildText,
           parent: CATEGORIA_TICKET_ID,
           permissionOverwrites: [
+            {
+              id: client.user.id,
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory,
+                PermissionsBitField.Flags.ManageChannels,
+                PermissionsBitField.Flags.ManageMessages,
+              ],
+            },
             { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-            { id: userId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
-            { id: CARGO_STAFF_ID, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
+            {
+              id: userId,
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory,
+              ],
+            },
+            {
+              id: CARGO_STAFF_ID,
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory,
+              ],
+            },
           ],
         });
 
@@ -189,91 +203,82 @@ client.on('interactionCreate', async (interaction) => {
         ticketsAbertos.set(userId, canal.id);
 
         await canal.send({ content: `🎫 Ticket de <@${userId}>`, components: [rowTicket()] });
-        return toast(interaction, `✅ Ticket criado: ${canal}`, 4500);
 
+        return toast(interaction, `✅ Ticket criado: ${canal}`, 4500);
       } catch (err) {
-        console.error('abrir_ticket error:', err);
+        log(`❌ abrir_ticket error: ${err?.message || err}`);
         return toast(interaction, '⚠️ Erro ao criar o ticket.', 4500);
       }
     }
 
-    /* ======= AÇÕES DENTRO DO TICKET ======= */
-    if (!interaction.channel || interaction.channel.type !== ChannelType.GuildText) return;
+    /* ===== AÇÕES DENTRO DO TICKET ===== */
+    if (!interaction.guild) return;
+    await ackUpdate(interaction);
 
-    // Tenta buscar o canal real (evita “Unknown Channel”)
-    const guild = interaction.guild;
-    const ch = await fetchChannelSafe(guild, interaction.channel.id);
+    const ch = await fetchChannelSafe(interaction.guild, interaction.channelId);
     if (!ch) {
-      await ackUpdate(interaction);
-      return toast(interaction, '⚠️ Este ticket não existe mais (canal apagado).', 7000);
+      return toast(interaction, '⚠️ Este ticket não existe mais (ou o bot não tem acesso).', 8000);
     }
 
     const ownerId = getTicketOwnerIdFromChannel(ch);
 
-    // ✅ FECHAR: dono OU staff — sempre vai para -fechado e bloqueia dono
+    // FECHAR: dono OU staff (sempre fecha e bloqueia dono)
     if (interaction.customId === 'ticket_fechar') {
-      await ackUpdate(interaction);
-
-      if (!ownerId) return toast(interaction, '⚠️ Não encontrei o dono do ticket.', 4500);
+      if (!ownerId) return toast(interaction, '⚠️ Não encontrei o dono do ticket.', 5000);
 
       const autorizado = (interaction.user.id === ownerId) || isStaff(interaction.member);
-      if (!autorizado) return toast(interaction, '🚫 Apenas o dono ou admin/staff pode FECHAR.', 5000);
+      if (!autorizado) return toast(interaction, '🚫 Apenas o dono ou staff pode FECHAR.', 6000);
 
       try {
-        await ch.permissionOverwrites.edit(ownerId, { SendMessages: false }).catch((e) => { throw e; });
+        await ch.permissionOverwrites.edit(ownerId, { SendMessages: false });
 
         const alvo = setTicketName(ch.name, 'fechado');
-        const res = await renameWithVerify(guild, ch, alvo, '-fechado');
+        const res = await renameWithVerify(interaction.guild, ch, alvo, '-fechado');
         if (!res.ok) {
-          console.error('rename fechado falhou:', res.err?.message || res.err);
-          return toast(interaction, '⚠️ Não consegui renomear para -fechado. Tente novamente.', 8000);
+          log(`❌ Falha renomeando para fechado: ${res.err?.message || res.err}`);
+          return toast(interaction, '⚠️ Não consegui renomear para -fechado. Tente novamente.', 9000);
         }
 
         return toast(interaction, '🔒 Ticket fechado.', 3500);
       } catch (err) {
-        console.error('ticket_fechar error:', err);
-        return toast(interaction, '⚠️ Erro ao fechar o ticket.', 6000);
+        log(`❌ ticket_fechar error: ${err?.message || err}`);
+        return toast(interaction, '⚠️ Erro ao fechar o ticket.', 7000);
       }
     }
 
-    // ✅ EDITAR: somente staff — somente se fechado — fecha->edicao e LIBERA DONO PARA ESCREVER
+    // EDITAR: somente staff, somente se fechado → edicao + libera dono escrever
     if (interaction.customId === 'ticket_editar') {
-      await ackUpdate(interaction);
-
-      if (!isStaff(interaction.member)) return toast(interaction, '🚫 Apenas admin/staff pode EDITAR.', 5000);
-      if (!ownerId) return toast(interaction, '⚠️ Não encontrei o dono do ticket.', 4500);
+      if (!isStaff(interaction.member)) return toast(interaction, '🚫 Apenas staff pode EDITAR.', 6000);
+      if (!ownerId) return toast(interaction, '⚠️ Não encontrei o dono do ticket.', 5000);
 
       const status = getTicketStatusFromName(ch.name);
-      if (status !== 'fechado') return toast(interaction, 'ℹ️ Para editar, o ticket precisa estar FECHADO.', 5000);
+      if (status !== 'fechado') return toast(interaction, 'ℹ️ Para editar, o ticket precisa estar FECHADO.', 6000);
 
       try {
-        // libera dono falar durante edição
         await ch.permissionOverwrites.edit(ownerId, { SendMessages: true });
 
         const alvo = setTicketName(ch.name, 'edicao');
-        const res = await renameWithVerify(guild, ch, alvo, '-edicao');
+        const res = await renameWithVerify(interaction.guild, ch, alvo, '-edicao');
         if (!res.ok) {
-          console.error('rename edicao falhou:', res.err?.message || res.err);
-          // volta permissão pra não deixar aberto sem edição
+          log(`❌ Falha renomeando para edição: ${res.err?.message || res.err}`);
+          // reverte permissão, para não deixar solto
           await ch.permissionOverwrites.edit(ownerId, { SendMessages: false }).catch(() => {});
-          return toast(interaction, '⚠️ Não consegui mudar para -edicao. Aguarde 30–60s e tente novamente.', 9000);
+          return toast(interaction, '⚠️ Não consegui mudar para -edicao. Aguarde 30–60s e tente novamente.', 10000);
         }
 
-        return toast(interaction, '✏️ Ticket em EDIÇÃO (dono liberado para enviar mensagens).', 6000);
+        return toast(interaction, '✏️ Ticket em EDIÇÃO (dono liberado para enviar mensagens).', 7000);
       } catch (err) {
-        console.error('ticket_editar error:', err);
-        return toast(interaction, '⚠️ Erro ao colocar ticket em edição.', 6000);
+        log(`❌ ticket_editar error: ${err?.message || err}`);
+        return toast(interaction, '⚠️ Erro ao colocar ticket em edição.', 7000);
       }
     }
 
-    // ✅ EXCLUIR: dono OU staff
+    // EXCLUIR: dono OU staff
     if (interaction.customId === 'ticket_excluir') {
-      await ackUpdate(interaction);
-
-      if (!ownerId) return toast(interaction, '⚠️ Não encontrei o dono do ticket.', 4500);
+      if (!ownerId) return toast(interaction, '⚠️ Não encontrei o dono do ticket.', 5000);
 
       const autorizado = (interaction.user.id === ownerId) || isStaff(interaction.member);
-      if (!autorizado) return toast(interaction, '🚫 Apenas o dono ou admin/staff pode EXCLUIR.', 5000);
+      if (!autorizado) return toast(interaction, '🚫 Apenas o dono ou staff pode EXCLUIR.', 6000);
 
       try {
         ticketsAbertos.delete(ownerId);
@@ -281,24 +286,22 @@ client.on('interactionCreate', async (interaction) => {
         setTimeout(() => ch.delete().catch(() => {}), 2000);
         return;
       } catch (err) {
-        console.error('ticket_excluir error:', err);
-        return toast(interaction, '⚠️ Erro ao excluir o ticket.', 6000);
+        log(`❌ ticket_excluir error: ${err?.message || err}`);
+        return toast(interaction, '⚠️ Erro ao excluir o ticket.', 7000);
       }
     }
 
-    // ✅ SALVAR: somente staff — somente se FECHADO
+    // SALVAR: somente staff, somente se fechado
     if (interaction.customId === 'ticket_salvar') {
-      await ackUpdate(interaction);
-
-      if (!isStaff(interaction.member)) return toast(interaction, '🚫 Apenas admin/staff pode SALVAR.', 5000);
-      if (!ownerId) return toast(interaction, '⚠️ Não encontrei o dono do ticket.', 4500);
+      if (!isStaff(interaction.member)) return toast(interaction, '🚫 Apenas staff pode SALVAR.', 6000);
+      if (!ownerId) return toast(interaction, '⚠️ Não encontrei o dono do ticket.', 5000);
 
       const status = getTicketStatusFromName(ch.name);
       if (status !== 'fechado') return toast(interaction, 'ℹ️ Para salvar, feche o ticket primeiro.', 6000);
 
       try {
         const msgs = await ch.messages.fetch({ limit: 100 }).catch(() => null);
-        if (!msgs) return toast(interaction, '⚠️ Não consegui buscar mensagens.', 6000);
+        if (!msgs) return toast(interaction, '⚠️ Não consegui buscar mensagens.', 7000);
 
         const arr = msgs.reverse().toJSON();
         const transcript = arr.map(m => `[${m.createdAt.toLocaleString()}] ${m.author.tag}: ${m.content || ''}`).join('\n');
@@ -341,8 +344,8 @@ client.on('interactionCreate', async (interaction) => {
         setTimeout(() => ch.delete().catch(() => {}), 2500);
         return;
       } catch (err) {
-        console.error('ticket_salvar error:', err);
-        return toast(interaction, '⚠️ Erro ao salvar o ticket.', 7000);
+        log(`❌ ticket_salvar error: ${err?.message || err}`);
+        return toast(interaction, '⚠️ Erro ao salvar o ticket.', 8000);
       }
     }
 
