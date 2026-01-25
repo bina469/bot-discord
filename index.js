@@ -98,6 +98,40 @@ async function enviarMsgTempNoCanal(channel, payload, ttlMs = 20000) {
   return msg;
 }
 
+/* ================= PROMISE TIMEOUT ================= */
+async function withTimeout(promise, ms, label = 'op') {
+  let t;
+  const timeout = new Promise((_, reject) => {
+    t = setTimeout(() => reject(new Error(`Timeout after ${ms}ms in ${label}`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/* ================= MOVE CATEGORY SAFE (timeout+retry+fallback) ================= */
+async function moveToCategorySafe(channel, parentId, label) {
+  for (let i = 1; i <= 3; i++) {
+    try {
+      await withTimeout(channel.setParent(parentId), 8000, `${label}:setParent attempt ${i}`);
+      return { ok: true, via: 'setParent' };
+    } catch (e) {
+      logLocal(`❌ ${label} setParent falhou (tentativa ${i}): ${e?.message || e}`);
+      await sleep(800);
+    }
+  }
+
+  try {
+    await withTimeout(channel.edit({ parent: parentId }), 8000, `${label}:edit(parent)`);
+    return { ok: true, via: 'edit' };
+  } catch (e) {
+    logLocal(`❌ ${label} edit(parent) falhou: ${e?.message || e}`);
+    return { ok: false, err: e };
+  }
+}
+
 /* ================= LOCK TICKETS (com timeout) ================= */
 function acquireLock(channelId, ttlMs = 15000) {
   if (ticketLocks.has(channelId)) return false;
@@ -505,12 +539,10 @@ client.on('interactionCreate', async (interaction) => {
 
           await setTicketStateOnTopic(ch, 'fechado');
 
-          // move para categoria FECHADOS (força refresh)
-          await ch.setParent(CATEGORIA_TICKETS_FECHADOS).catch((e) => {
-            logLocal(`❌ ticket_fechar setParent erro: ${e?.message || e}`);
-          });
+          const moved = await moveToCategorySafe(ch, CATEGORIA_TICKETS_FECHADOS, `ticket_fechar canal=${ch.id}`);
+          if (!moved.ok) return toast(interaction, '⚠️ Não consegui mover para FECHADOS. Tente novamente.', 8000);
 
-          logLocal(`ticket_fechar ok canal=${ch.id} -> categoria fechados`);
+          logLocal(`ticket_fechar ok canal=${ch.id} -> categoria fechados via=${moved.via}`);
           return toast(interaction, '🔒 Ticket fechado.', 3500);
         }
 
@@ -527,12 +559,10 @@ client.on('interactionCreate', async (interaction) => {
 
           await setTicketStateOnTopic(ch, 'aberto');
 
-          // move para categoria ABERTOS (força refresh)
-          await ch.setParent(CATEGORIA_TICKETS_ABERTOS).catch((e) => {
-            logLocal(`❌ ticket_abrir setParent erro: ${e?.message || e}`);
-          });
+          const moved = await moveToCategorySafe(ch, CATEGORIA_TICKETS_ABERTOS, `ticket_abrir canal=${ch.id}`);
+          if (!moved.ok) return toast(interaction, '⚠️ Não consegui mover para ABERTOS. Tente novamente.', 8000);
 
-          logLocal(`ticket_abrir ok canal=${ch.id} -> categoria abertos`);
+          logLocal(`ticket_abrir ok canal=${ch.id} -> categoria abertos via=${moved.via}`);
           return toast(interaction, '🔓 Ticket reaberto.', 3500);
         }
 
