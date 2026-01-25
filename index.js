@@ -67,50 +67,26 @@ function isStaff(member) {
   return !!member?.roles?.cache?.has(CARGO_STAFF_ID);
 }
 
-async function responder(interaction, payload) {
+async function responderEphemeral(interaction, content) {
   try {
-    const data = { ...payload, flags: 64 };
-    if (interaction.replied || interaction.deferred) return await interaction.followUp(data);
-    return await interaction.reply(data);
-  } catch {}
-}
-
-async function avisarEphemeral(interaction, content, ms = 3500) {
-  try {
-    const payload = { content, flags: 64 };
-    let msg;
-    if (interaction.replied || interaction.deferred) msg = await interaction.followUp(payload);
-    else msg = await interaction.reply(payload);
-
-    if (msg?.id) {
-      setTimeout(() => {
-        interaction.webhook?.deleteMessage(msg.id).catch(() => {});
-      }, ms);
+    if (interaction.replied || interaction.deferred) {
+      return await interaction.followUp({ content, flags: 64 });
     }
+    return await interaction.reply({ content, flags: 64 });
   } catch {}
 }
 
-async function enviarMsgTempNoCanal(channel, payload, ms = 20000) {
-  const msg = await channel.send(payload).catch(() => null);
-  if (!msg) return null;
-  setTimeout(() => msg.delete().catch(() => {}), ms);
-  return msg;
-}
-
-/**
- * ✅ Ticket buttons: ACK com deferUpdate (não trava "pensando")
- */
-async function ackComponent(interaction) {
+// ✅ Para botões/menus: encerra o “pensando…” imediatamente
+async function ackUpdate(interaction) {
   try {
     if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferUpdate();
+      await interaction.deferUpdate().catch(() => {});
     }
-  } catch (e) {
-    console.error('ackComponent error:', e);
-  }
+  } catch {}
 }
 
-async function followEphemeral(interaction, content, ms = 3500) {
+// Ephemeral que some sozinho (serve para followUp após deferUpdate)
+async function avisarEphemeralAutoDelete(interaction, content, ms = 3500) {
   try {
     const msg = await interaction.followUp({ content, flags: 64 }).catch(() => null);
     if (msg?.id) {
@@ -119,45 +95,24 @@ async function followEphemeral(interaction, content, ms = 3500) {
   } catch {}
 }
 
+// Envia mensagem no canal e apaga após ms (menus temporários)
+async function enviarMsgTempNoCanal(channel, payload, ms = 20000) {
+  const msg = await channel.send(payload).catch(() => null);
+  if (!msg) return null;
+  setTimeout(() => msg.delete().catch(() => {}), ms);
+  return msg;
+}
+
 function getTicketOwnerIdFromChannel(channel) {
   const topic = channel?.topic || '';
   const match = topic.match(/ticket-owner:(\d+)/);
   return match ? match[1] : null;
 }
 
+// Normaliza nomes do ticket garantindo sufixo correto
 function makeTicketName(currentName, status /* 'aberto'|'fechado' */) {
   const base = (currentName || '').replace(/-aberto$/i, '').replace(/-fechado$/i, '');
   return `${base}-${status}`;
-}
-
-/**
- * Renomeia com fallback e retry (resolve "não muda o nome")
- */
-async function renameChannelRobusto(channel, newName) {
-  if (!channel || !newName) return;
-  if (channel.name === newName) return;
-
-  try {
-    await channel.setName(newName);
-    return;
-  } catch (e1) {
-    console.error('setName falhou:', e1);
-  }
-
-  try {
-    await channel.edit({ name: newName });
-    return;
-  } catch (e2) {
-    console.error('channel.edit(name) falhou:', e2);
-  }
-
-  // retry curto
-  try {
-    await new Promise(r => setTimeout(r, 800));
-    await channel.edit({ name: newName });
-  } catch (e3) {
-    console.error('retry channel.edit(name) falhou:', e3);
-  }
 }
 
 /* ================= UI BUILDERS ================= */
@@ -196,10 +151,7 @@ function buildPainelPresencaPayload() {
     new ButtonBuilder().setCustomId('presenca_forcar').setLabel('⚠️ Forçar').setStyle(ButtonStyle.Secondary),
   );
 
-  return {
-    content: `📞 **PAINEL DE PRESENÇA**\n\n${linhas}`,
-    components: [rowTelefones, rowAcoes],
-  };
+  return { content: `📞 **PAINEL DE PRESENÇA**\n\n${linhas}`, components: [rowTelefones, rowAcoes] };
 }
 
 function menuTelefones(customId, { apenasOcupados = false, placeholder = 'Selecione um telefone' } = {}) {
@@ -307,7 +259,6 @@ async function upsertPainelPresenca() {
 
 async function reconstruirTickets() {
   ticketsAbertos.clear();
-
   const categoria = await client.channels.fetch(CATEGORIA_TICKET_ID).catch(() => null);
   if (!categoria || !categoria.children) return;
 
@@ -369,16 +320,17 @@ client.once('clientReady', async () => {
 /* ================= INTERAÇÕES ================= */
 client.on('interactionCreate', async (interaction) => {
   try {
-    /* ================= PAINEL DE PRESENÇA ================= */
+    /* ================= PAINEL DE PRESENÇA (SEM LIMITAÇÃO) ================= */
     if (interaction.isButton() && interaction.customId.startsWith('presenca_')) {
       await interaction.deferUpdate().catch(() => {});
 
       if (interaction.customId.startsWith('presenca_tel_')) {
         const tel = interaction.customId.replace('presenca_tel_', '');
-        if (estadoTelefones[tel] == null) await avisarEphemeral(interaction, '⚠️ Telefone inválido.', 2500);
-        else {
+        if (estadoTelefones[tel] == null) {
+          await avisarEphemeralAutoDelete(interaction, '⚠️ Telefone inválido.', 2500);
+        } else {
           estadoTelefones[tel] = (estadoTelefones[tel] === 'Livre') ? 'binabot' : 'Livre';
-          await avisarEphemeral(interaction, `📞 ${tel}: ${estadoTelefones[tel]}`, 2500);
+          await avisarEphemeralAutoDelete(interaction, `📞 ${tel}: ${estadoTelefones[tel]}`, 2500);
         }
         await upsertPainelPresenca();
         return;
@@ -387,101 +339,121 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.customId === 'presenca_desconectar_todos') {
         for (const t of telefones) estadoTelefones[t] = 'Livre';
         await upsertPainelPresenca();
-        await avisarEphemeral(interaction, '🔴 Desconectado de todos.', 3000);
+        await avisarEphemeralAutoDelete(interaction, '🔴 Desconectado de todos.', 3000);
         return;
       }
 
       if (interaction.customId === 'presenca_desconectar_um') {
         fluxoPresenca.set(interaction.user.id, { action: 'desconectar_um', step: 'telefone' });
+
         await enviarMsgTempNoCanal(interaction.channel, {
           content: `🟠 <@${interaction.user.id}>, selecione o telefone que deseja **desconectar**:`,
-          components: [menuTelefones('presenca_desconectar_um_select', { apenasOcupados: true })],
+          components: [menuTelefones('presenca_desconectar_um_select', { apenasOcupados: true, placeholder: 'Telefone para desconectar' })],
         }, 20000);
+
         return;
       }
 
       if (interaction.customId === 'presenca_transferir') {
         fluxoPresenca.set(interaction.user.id, { action: 'transferir', step: 'telefone_origem' });
+
         await enviarMsgTempNoCanal(interaction.channel, {
           content: `🔵 <@${interaction.user.id}>, selecione o **telefone de origem**:`,
-          components: [menuTelefones('presenca_transferir_tel_select', { apenasOcupados: true })],
+          components: [menuTelefones('presenca_transferir_tel_select', { apenasOcupados: true, placeholder: 'Telefone de origem' })],
         }, 20000);
+
         return;
       }
 
       if (interaction.customId === 'presenca_forcar') {
         fluxoPresenca.set(interaction.user.id, { action: 'forcar', step: 'telefone' });
+
         await enviarMsgTempNoCanal(interaction.channel, {
           content: `⚠️ <@${interaction.user.id}>, selecione o telefone para **forçar desconexão**:`,
-          components: [menuTelefones('presenca_forcar_select', { apenasOcupados: true })],
+          components: [menuTelefones('presenca_forcar_select', { apenasOcupados: true, placeholder: 'Telefone para forçar' })],
         }, 20000);
+
         return;
       }
+
       return;
     }
 
+    /* ================= MENUS PRESENÇA ================= */
     if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_desconectar_um_select') {
       await interaction.deferUpdate().catch(() => {});
-      if (!fluxoPresenca.has(interaction.user.id)) return avisarEphemeral(interaction, '⚠️ Menu expirou.', 2500);
+      if (!fluxoPresenca.has(interaction.user.id)) return avisarEphemeralAutoDelete(interaction, '⚠️ Este menu expirou.', 2500);
+
       const tel = interaction.values?.[0];
-      if (!tel || tel === '__none__') return avisarEphemeral(interaction, '⚠️ Nenhum telefone disponível.', 2500);
+      if (!tel || tel === '__none__') return avisarEphemeralAutoDelete(interaction, '⚠️ Nenhum telefone disponível.', 2500);
 
       estadoTelefones[tel] = 'Livre';
       await upsertPainelPresenca();
       fluxoPresenca.delete(interaction.user.id);
+
       interaction.message.delete().catch(() => {});
-      await avisarEphemeral(interaction, `✅ ${tel} desconectado.`, 3000);
+      await avisarEphemeralAutoDelete(interaction, `✅ ${tel} desconectado.`, 3000);
       return;
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_transferir_tel_select') {
       await interaction.deferUpdate().catch(() => {});
-      if (!fluxoPresenca.has(interaction.user.id)) return avisarEphemeral(interaction, '⚠️ Menu expirou.', 2500);
+      if (!fluxoPresenca.has(interaction.user.id)) return avisarEphemeralAutoDelete(interaction, '⚠️ Este menu expirou.', 2500);
+
       const tel = interaction.values?.[0];
-      if (!tel || tel === '__none__') return avisarEphemeral(interaction, '⚠️ Nenhum telefone disponível.', 2500);
+      if (!tel || tel === '__none__') return avisarEphemeralAutoDelete(interaction, '⚠️ Nenhum telefone disponível.', 2500);
 
       fluxoPresenca.set(interaction.user.id, { action: 'transferir', step: 'usuario', telefone: tel });
       interaction.message.delete().catch(() => {});
+
       await enviarMsgTempNoCanal(interaction.channel, {
-        content: `🔵 <@${interaction.user.id}>, selecione o **membro** para receber **${tel}**:`,
-        components: [menuUsuario('presenca_transferir_user_select')],
+        content: `🔵 <@${interaction.user.id}>, selecione o **membro** para receber o telefone **${tel}**:`,
+        components: [menuUsuario('presenca_transferir_user_select', 'Membro destino')],
       }, 20000);
+
       return;
     }
 
     if (interaction.isUserSelectMenu() && interaction.customId === 'presenca_transferir_user_select') {
       await interaction.deferUpdate().catch(() => {});
       const fluxo = fluxoPresenca.get(interaction.user.id);
-      if (!fluxo || fluxo.action !== 'transferir' || !fluxo.telefone) return avisarEphemeral(interaction, '⚠️ Fluxo expirou.', 2500);
+      if (!fluxo || fluxo.action !== 'transferir' || !fluxo.telefone) return avisarEphemeralAutoDelete(interaction, '⚠️ Fluxo expirou. Clique em Transferir novamente.', 3000);
+
       const userId = interaction.values?.[0];
+      if (!userId) return;
+
       const tel = fluxo.telefone;
       estadoTelefones[tel] = `<@${userId}>`;
       await upsertPainelPresenca();
       fluxoPresenca.delete(interaction.user.id);
+
       interaction.message.delete().catch(() => {});
-      await avisarEphemeral(interaction, `✅ Transferido: ${tel} -> <@${userId}>`, 3500);
+      await avisarEphemeralAutoDelete(interaction, `✅ Transferido: **${tel}** agora está com <@${userId}>.`, 3500);
       return;
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId === 'presenca_forcar_select') {
       await interaction.deferUpdate().catch(() => {});
-      if (!fluxoPresenca.has(interaction.user.id)) return avisarEphemeral(interaction, '⚠️ Menu expirou.', 2500);
+      if (!fluxoPresenca.has(interaction.user.id)) return avisarEphemeralAutoDelete(interaction, '⚠️ Este menu expirou.', 2500);
+
       const tel = interaction.values?.[0];
-      if (!tel || tel === '__none__') return avisarEphemeral(interaction, '⚠️ Nenhum telefone disponível.', 2500);
+      if (!tel || tel === '__none__') return avisarEphemeralAutoDelete(interaction, '⚠️ Nenhum telefone disponível.', 2500);
 
       estadoTelefones[tel] = 'Livre';
       await upsertPainelPresenca();
       fluxoPresenca.delete(interaction.user.id);
+
       interaction.message.delete().catch(() => {});
-      await avisarEphemeral(interaction, `⚠️ Forçado: ${tel} desconectado.`, 3500);
+      await avisarEphemeralAutoDelete(interaction, `⚠️ Forçado: **${tel}** desconectado.`, 3500);
       return;
     }
 
     /* ================= TICKETS ================= */
 
-    // abrir ticket (criar)
+    // Abrir Ticket (criar canal) — usa deferUpdate + followUp (não trava)
     if (interaction.isButton() && interaction.customId === 'abrir_ticket') {
-      await ackComponent(interaction);
+      await ackUpdate(interaction);
+
       try {
         const userId = interaction.user.id;
 
@@ -489,7 +461,7 @@ client.on('interactionCreate', async (interaction) => {
         if (canalIdExistente) {
           const ch = interaction.guild.channels.cache.get(canalIdExistente);
           if (ch) {
-            await followEphemeral(interaction, `⚠️ Você já tem um ticket aberto: ${ch}`, 4000);
+            await avisarEphemeralAutoDelete(interaction, `⚠️ Você já tem um ticket aberto: ${ch}`, 4500);
             return;
           }
           ticketsAbertos.delete(userId);
@@ -511,95 +483,107 @@ client.on('interactionCreate', async (interaction) => {
 
         await canal.send({ content: `🎫 Ticket de <@${userId}>`, components: [rowTicket()] });
 
-        await followEphemeral(interaction, `✅ Ticket criado: ${canal}`, 4000);
+        await avisarEphemeralAutoDelete(interaction, `✅ Ticket criado: ${canal}`, 4500);
         return;
       } catch (err) {
         console.error('❌ abrir_ticket:', err);
-        await followEphemeral(interaction, '⚠️ Erro ao criar o ticket.', 5000);
+        await avisarEphemeralAutoDelete(interaction, '⚠️ Erro ao criar o ticket.', 4500);
         return;
       }
     }
 
-    // fechar (dono OU staff)
+    // FECHAR — dono OU staff
     if (interaction.isButton() && interaction.customId === 'ticket_fechar') {
-      await ackComponent(interaction);
+      await ackUpdate(interaction);
+
       try {
         const donoId = getTicketOwnerIdFromChannel(interaction.channel);
-        if (!donoId) return followEphemeral(interaction, '⚠️ Dono do ticket não encontrado.', 5000);
+        if (!donoId) return avisarEphemeralAutoDelete(interaction, '⚠️ Não encontrei o dono do ticket.', 3500);
 
         const autorizado = (interaction.user.id === donoId) || isStaff(interaction.member);
-        if (!autorizado) return followEphemeral(interaction, '🚫 Apenas dono ou staff pode FECHAR.', 4500);
+        if (!autorizado) return avisarEphemeralAutoDelete(interaction, '🚫 Apenas o dono ou admin/staff pode FECHAR.', 4000);
 
         await interaction.channel.permissionOverwrites.edit(donoId, { SendMessages: false });
-        await renameChannelRobusto(interaction.channel, makeTicketName(interaction.channel.name, 'fechado'));
+        const novoNome = makeTicketName(interaction.channel.name, 'fechado');
+        await interaction.channel.setName(novoNome);
 
-        await followEphemeral(interaction, '🔒 Ticket fechado.', 3500);
+        await avisarEphemeralAutoDelete(interaction, '🔒 Ticket fechado.', 3500);
         return;
       } catch (err) {
         console.error('❌ ticket_fechar:', err);
-        await followEphemeral(interaction, '⚠️ Erro ao fechar ticket (veja logs).', 6000);
+        await avisarEphemeralAutoDelete(interaction, '⚠️ Erro ao fechar o ticket.', 4500);
         return;
       }
     }
 
-    // excluir (dono OU staff)
+    // EXCLUIR — dono OU staff
     if (interaction.isButton() && interaction.customId === 'ticket_excluir') {
-      await ackComponent(interaction);
+      await ackUpdate(interaction);
+
       try {
         const donoId = getTicketOwnerIdFromChannel(interaction.channel);
-        if (!donoId) return followEphemeral(interaction, '⚠️ Dono do ticket não encontrado.', 5000);
+        if (!donoId) return avisarEphemeralAutoDelete(interaction, '⚠️ Não encontrei o dono do ticket.', 3500);
 
         const autorizado = (interaction.user.id === donoId) || isStaff(interaction.member);
-        if (!autorizado) return followEphemeral(interaction, '🚫 Apenas dono ou staff pode EXCLUIR.', 4500);
+        if (!autorizado) return avisarEphemeralAutoDelete(interaction, '🚫 Apenas o dono ou admin/staff pode EXCLUIR.', 4500);
 
         ticketsAbertos.delete(donoId);
-        await followEphemeral(interaction, '🗑 Ticket será apagado em 2s...', 2000);
+
+        await avisarEphemeralAutoDelete(interaction, '🗑 Ticket será apagado em 2s...', 2500);
         setTimeout(() => interaction.channel.delete().catch(() => {}), 2000);
         return;
       } catch (err) {
         console.error('❌ ticket_excluir:', err);
-        await followEphemeral(interaction, '⚠️ Erro ao excluir ticket.', 6000);
+        await avisarEphemeralAutoDelete(interaction, '⚠️ Erro ao excluir o ticket.', 4500);
         return;
       }
     }
 
-    // abrir/reabrir (somente staff)
+    // ABRIR (reabrir) — somente staff
     if (interaction.isButton() && interaction.customId === 'ticket_abrir') {
-      await ackComponent(interaction);
+      await ackUpdate(interaction);
+
       try {
-        if (!isStaff(interaction.member)) return followEphemeral(interaction, '🚫 Apenas staff pode ABRIR (reabrir).', 4500);
+        if (!isStaff(interaction.member)) {
+          return avisarEphemeralAutoDelete(interaction, '🚫 Apenas admin/staff pode ABRIR (reabrir).', 4500);
+        }
 
         const donoId = getTicketOwnerIdFromChannel(interaction.channel);
-        if (!donoId) return followEphemeral(interaction, '⚠️ Dono do ticket não encontrado.', 5000);
+        if (!donoId) return avisarEphemeralAutoDelete(interaction, '⚠️ Não encontrei o dono do ticket.', 3500);
 
         await interaction.channel.permissionOverwrites.edit(donoId, { SendMessages: true });
+
+        const novoNome = makeTicketName(interaction.channel.name, 'aberto');
+        await interaction.channel.setName(novoNome);
+
         ticketsAbertos.set(donoId, interaction.channel.id);
 
-        await renameChannelRobusto(interaction.channel, makeTicketName(interaction.channel.name, 'aberto'));
-
-        await followEphemeral(interaction, '🔓 Ticket reaberto.', 3500);
+        await avisarEphemeralAutoDelete(interaction, '🔓 Ticket reaberto.', 3500);
         return;
       } catch (err) {
         console.error('❌ ticket_abrir:', err);
-        await followEphemeral(interaction, '⚠️ Erro ao reabrir ticket (veja logs).', 6000);
+        await avisarEphemeralAutoDelete(interaction, '⚠️ Erro ao reabrir o ticket.', 4500);
         return;
       }
     }
 
-    // salvar (somente staff) + apaga canal
+    // SALVAR — somente staff
     if (interaction.isButton() && interaction.customId === 'ticket_salvar') {
-      await ackComponent(interaction);
+      await ackUpdate(interaction);
+
       try {
-        if (!isStaff(interaction.member)) return followEphemeral(interaction, '🚫 Apenas staff pode SALVAR.', 4500);
+        if (!isStaff(interaction.member)) {
+          return avisarEphemeralAutoDelete(interaction, '🚫 Apenas admin/staff pode SALVAR.', 4500);
+        }
 
         const ownerId = getTicketOwnerIdFromChannel(interaction.channel);
-        if (!ownerId) return followEphemeral(interaction, '⚠️ Dono do ticket não encontrado.', 5000);
+        if (!ownerId) return avisarEphemeralAutoDelete(interaction, '⚠️ Não encontrei o dono do ticket.', 3500);
 
         const data = await gerarTranscriptEResumo(interaction.channel);
-        if (!data) return followEphemeral(interaction, '⚠️ Não consegui gerar transcript.', 5000);
+        if (!data) return avisarEphemeralAutoDelete(interaction, '⚠️ Não consegui gerar o transcript.', 4500);
 
         const { transcript, resumo } = data;
-        const safeResumo = resumo.length > 1900 ? (resumo.slice(0, 1900) + '\n...(truncado)') : resumo;
+        const safeResumo = resumo.length > 1900 ? (resumo.slice(0, 1900) + '\n...(resumo truncado)') : resumo;
 
         const canalRelatorio = await client.channels.fetch(CANAL_RELATORIO_ID).catch(() => null);
         if (canalRelatorio?.isTextBased()) await canalRelatorio.send({ content: safeResumo }).catch(() => {});
@@ -619,12 +603,12 @@ client.on('interactionCreate', async (interaction) => {
 
         ticketsAbertos.delete(ownerId);
 
-        await followEphemeral(interaction, '💾 Salvo. Ticket será apagado em 2.5s...', 2500);
+        await avisarEphemeralAutoDelete(interaction, '💾 Transcript salvo. Este ticket será apagado.', 3500);
         setTimeout(() => interaction.channel.delete().catch(() => {}), 2500);
         return;
       } catch (err) {
         console.error('❌ ticket_salvar:', err);
-        await followEphemeral(interaction, '⚠️ Erro ao salvar transcript (veja logs).', 6000);
+        await avisarEphemeralAutoDelete(interaction, '⚠️ Erro ao salvar o transcript.', 4500);
         return;
       }
     }
